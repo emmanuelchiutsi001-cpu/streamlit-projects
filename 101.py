@@ -2009,7 +2009,7 @@ class DeveloperObjectivesTracker:
         fig.update_yaxes(title_text="F1-Score", range=[0, 1], row=2, col=1)
         fig.update_yaxes(title_text="R² Score", range=[0, 1], row=2, col=2)
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Performance summary
         st.markdown("#### 📋 Performance Summary")
@@ -2156,7 +2156,7 @@ class DeveloperObjectivesTracker:
                 height=300
             )
 
-            st.plotly_chart(fig_accuracy, use_container_width=True)
+            st.plotly_chart(fig_accuracy, width="stretch")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2246,7 +2246,7 @@ class DeveloperObjectivesTracker:
                     height=200,
                     margin=dict(l=20, r=20, t=40, b=20)
                 )
-                st.plotly_chart(fig_data, use_container_width=True)
+                st.plotly_chart(fig_data, width="stretch")
 
                 # Performance summary
                 st.info(
@@ -2305,7 +2305,7 @@ class DeveloperObjectivesTracker:
                     height=200,
                     margin=dict(l=20, r=20, t=40, b=20)
                 )
-                st.plotly_chart(fig_acc, use_container_width=True)
+                st.plotly_chart(fig_acc, width="stretch")
 
                 # Performance summary
                 st.success(
@@ -2386,7 +2386,7 @@ class DeveloperObjectivesTracker:
                     height=200,
                     margin=dict(l=20, r=20, t=40, b=20)
                 )
-                st.plotly_chart(fig_efficiency, use_container_width=True)
+                st.plotly_chart(fig_efficiency, width="stretch")
 
                 # Performance summary
                 if efficiency > 85:
@@ -2476,7 +2476,7 @@ class DeveloperObjectivesTracker:
                     height=200,
                     margin=dict(l=20, r=20, t=40, b=20)
                 )
-                st.plotly_chart(fig_trend, use_container_width=True)
+                st.plotly_chart(fig_trend, width="stretch")
 
                 # Performance summary
                 stability = "Excellent" if stats['std_dev'] < 2 else "Good" if stats['std_dev'] < 3 else "Adequate"
@@ -2533,7 +2533,7 @@ class DeveloperObjectivesTracker:
                     height=200,
                     margin=dict(l=20, r=20, t=40, b=20)
                 )
-                st.plotly_chart(fig_viz, use_container_width=True)
+                st.plotly_chart(fig_viz, width="stretch")
 
                 # Performance summary
                 st.success(
@@ -2629,7 +2629,7 @@ class DeveloperObjectivesTracker:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-        st.plotly_chart(fig_performance, use_container_width=True)
+        st.plotly_chart(fig_performance, width="stretch")
         st.markdown("</div>", unsafe_allow_html=True)
 
     def _get_performance_description(self, progress):
@@ -3078,7 +3078,7 @@ def create_grid_operator_dashboard():
         showlegend=False
     )
 
-    st.plotly_chart(fig_regional, use_container_width=True)
+    st.plotly_chart(fig_regional, width="stretch")
 
     # Grid Health Timeline
     st.markdown('<div class="section-header">📈 Grid Health Timeline</div>', unsafe_allow_html=True)
@@ -3115,7 +3115,7 @@ def create_grid_operator_dashboard():
         showlegend=True
     )
 
-    st.plotly_chart(fig_health, use_container_width=True)
+    st.plotly_chart(fig_health, width="stretch")
 
 
 # ============================================================================
@@ -3226,15 +3226,15 @@ def create_household_dashboard():
         st.markdown("### ⚡ Quick Actions")
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("☀️ Solar", use_container_width=True, key="quick_solar"):
+            if st.button("☀️ Solar", width="stretch", key="quick_solar"):
                 st.session_state.current_source = "solar"
                 st.rerun()
         with col2:
-            if st.button("🔋 Battery", use_container_width=True, key="quick_battery"):
+            if st.button("🔋 Battery", width="stretch", key="quick_battery"):
                 st.session_state.current_source = "battery"
                 st.rerun()
         with col3:
-            if st.button("🏭 Grid", use_container_width=True, key="quick_grid"):
+            if st.button("🏭 Grid", width="stretch", key="quick_grid"):
                 st.session_state.current_source = "grid"
                 st.rerun()
 
@@ -3455,7 +3455,7 @@ def create_household_dashboard():
                 showlegend=True
             )
 
-            st.plotly_chart(fig_forecast, use_container_width=True)
+            st.plotly_chart(fig_forecast, width="stretch")
 
             # Forecast statistics
             if len(forecast_power) > 0:
@@ -3517,7 +3517,7 @@ def create_household_dashboard():
                 )]
             )
 
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
 
             # Power source insights
             st.markdown("### ⚡ Power Source Recommendations")
@@ -3636,7 +3636,7 @@ def create_household_dashboard():
                 hovermode='x unified'
             )
 
-            st.plotly_chart(fig_perf, use_container_width=True)
+            st.plotly_chart(fig_perf, width="stretch")
 
         # Current metrics - FIXED: Retrieve values from session state
         col1, col2, col3 = st.columns(3)
@@ -3732,7 +3732,7 @@ def create_household_dashboard():
         # Graph explanation buttons
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("🌞 Solar Forecast", use_container_width=True, key="explain_solar_forecast"):
+            if st.button("🌞 Solar Forecast", width="stretch", key="explain_solar_forecast"):
                 response = chat_interpreter.interpret_solar_forecast_graph()
                 st.session_state.chat_messages.append(
                     {"role": "user", "message": "Can you explain the solar forecast graph?"})
@@ -3740,7 +3740,7 @@ def create_household_dashboard():
                 st.rerun()
 
         with col2:
-            if st.button("📊 Power Distribution", use_container_width=True, key="explain_power_dist"):
+            if st.button("📊 Power Distribution", width="stretch", key="explain_power_dist"):
                 response = chat_interpreter.interpret_power_distribution_chart()
                 st.session_state.chat_messages.append(
                     {"role": "user", "message": "What does the power distribution chart show?"})
@@ -3748,7 +3748,7 @@ def create_household_dashboard():
                 st.rerun()
 
         with col3:
-            if st.button("🔋 Battery Analytics", use_container_width=True, key="explain_battery"):
+            if st.button("🔋 Battery Analytics", width="stretch", key="explain_battery"):
                 response = chat_interpreter.interpret_battery_analytics()
                 st.session_state.chat_messages.append(
                     {"role": "user", "message": "Explain the battery analytics"})
@@ -3790,7 +3790,7 @@ def create_household_dashboard():
         for topic in help_topics:
             st.markdown(f'<div class="powerbi-metric">{topic}</div>', unsafe_allow_html=True)
 
-        if st.button("🔄 Clear Chat History", use_container_width=True, key="clear_chat"):
+        if st.button("🔄 Clear Chat History", width="stretch", key="clear_chat"):
             st.session_state.chat_messages = []
             st.rerun()
 
@@ -3839,7 +3839,7 @@ def main():
             formatted_time = last_update.strftime("%H:%M:%S")
         st.markdown(f'🔄 Last update: {formatted_time}')
     with col3:
-        if st.button("🔄 Manual Refresh", use_container_width=True):
+        if st.button("🔄 Manual Refresh", width="stretch"):
             update_live_stats()
             st.rerun()
 

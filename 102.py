@@ -3186,15 +3186,15 @@ def create_household_dashboard():
         st.markdown("### ⚡ Quick Actions")
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("☀️ Solar", use_container_width=True, key="quick_solar"):
+            if st.button("☀️ Solar", width="stretch", key="quick_solar"):
                 st.session_state.current_source = "solar"
                 st.rerun()
         with col2:
-            if st.button("🔋 Battery", use_container_width=True, key="quick_battery"):
+            if st.button("🔋 Battery", width="stretch", key="quick_battery"):
                 st.session_state.current_source = "battery"
                 st.rerun()
         with col3:
-            if st.button("🏭 Grid", use_container_width=True, key="quick_grid"):
+            if st.button("🏭 Grid", width="stretch", key="quick_grid"):
                 st.session_state.current_source = "grid"
                 st.rerun()
 
@@ -3690,7 +3690,7 @@ def create_household_dashboard():
         # Graph explanation buttons - each button shows ONE answer and stops
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("🌞 Solar Forecast", use_container_width=True, key="explain_solar_forecast"):
+            if st.button("🌞 Solar Forecast", width="stretch", key="explain_solar_forecast"):
                 # Clear any pending and show single answer
                 response = chat_interpreter.interpret_solar_forecast_graph()
                 st.session_state.chat_messages.append(
@@ -3699,7 +3699,7 @@ def create_household_dashboard():
                 st.rerun()
 
         with col2:
-            if st.button("📊 Power Distribution", use_container_width=True, key="explain_power_dist"):
+            if st.button("📊 Power Distribution", width="stretch", key="explain_power_dist"):
                 response = chat_interpreter.interpret_power_distribution_chart()
                 st.session_state.chat_messages.append(
                     {"role": "user", "message": "What does the power distribution chart show?"})
@@ -3707,7 +3707,7 @@ def create_household_dashboard():
                 st.rerun()
 
         with col3:
-            if st.button("🔋 Battery Analytics", use_container_width=True, key="explain_battery"):
+            if st.button("🔋 Battery Analytics", width="stretch", key="explain_battery"):
                 response = chat_interpreter.interpret_battery_analytics()
                 st.session_state.chat_messages.append(
                     {"role": "user", "message": "Explain the battery analytics"})
@@ -3772,7 +3772,7 @@ I'll give you one detailed answer and then stop. Just ask your next question whe
         for topic in help_topics:
             st.markdown(f'<div class="powerbi-metric">{topic}</div>', unsafe_allow_html=True)
 
-        if st.button("🗑️ Clear Chat History", use_container_width=True, key="clear_chat"):
+        if st.button("🗑️ Clear Chat History", width="stretch", key="clear_chat"):
             st.session_state.chat_messages = []
             st.session_state.answer_processed = False
             st.rerun()
@@ -3830,7 +3830,7 @@ def main():
             formatted_time = last_update.strftime("%H:%M:%S")
         st.markdown(f'🔄 Last update: {formatted_time}')
     with col3:
-        if st.button("🔄 Manual Refresh", use_container_width=True):
+        if st.button("🔄 Manual Refresh", width="stretch"):
             update_live_stats()
             st.rerun()
 

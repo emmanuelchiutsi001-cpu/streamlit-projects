@@ -418,7 +418,7 @@ class OptimizedCrimeTrainer:
             # Optimizer with weight decay
             optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=0.01)
 
-            # Scheduler
+            # Scheduler - FIXED: removed 'verbose' parameter
             scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
             if progress_callback:
@@ -763,7 +763,7 @@ class AdvancedCrimeAnalyzer:
         duration = total_frames / fps if fps > 0 else 0
 
         frame_count = 0
-        crime_events = []  # This should be a list of dictionaries
+        crime_events = []
         model_predictions = []
         prediction_confidences = []
 
@@ -774,7 +774,6 @@ class AdvancedCrimeAnalyzer:
         self.model.frame_buffer.clear()
 
         consecutive_crime = 0
-        event_list = []  # Store detailed events
 
         for frame_idx in range(0, total_frames, sample_rate):
             try:
@@ -806,15 +805,11 @@ class AdvancedCrimeAnalyzer:
                     # Trigger on sustained detection
                     if consecutive_crime >= 3:
                         crime_score = min(50 + confidence * 50, 100)
-                        event_data = {
+                        crime_events.append({
                             'time': round(frame_idx / fps, 1),
                             'score': round(crime_score, 1),
-                            'type': CRIME_TYPE_MAP.get(pred_category, 'SUSPICIOUS'),
-                            'category': pred_category,
-                            'confidence': round(confidence * 100, 1)
-                        }
-                        event_list.append(event_data)
-                        crime_events.append(event_data)  # Keep as list of dicts
+                            'type': CRIME_TYPE_MAP.get(pred_category, 'SUSPICIOUS')
+                        })
 
                         # Reset counter after alert to avoid spam
                         consecutive_crime = 0
@@ -826,22 +821,19 @@ class AdvancedCrimeAnalyzer:
 
         # Calculate metrics
         metrics = self.calculate_metrics(
-            event_list, model_predictions, prediction_confidences,
+            crime_events, model_predictions, prediction_confidences,
             frame_count, duration, is_normal_video
         )
 
-        # Store events separately in metrics
-        metrics['crime_events_list'] = event_list
-
         if actual_label is not None:
-            predicted_crime = len(event_list) > 0 or metrics.get('overall_crime_score', 0) > 35
+            predicted_crime = len(crime_events) > 0 or metrics.get('overall_crime_score', 0) > 35
             self.update_performance_stats(predicted_crime, actual_label)
 
         self.analysis_history.append({
             'timestamp': datetime.now(),
             'video': os.path.basename(video_path),
             'metrics': metrics,
-            'crime_events': event_list
+            'crime_events': crime_events[:20]
         })
 
         return metrics, "Analysis complete"
@@ -1184,44 +1176,11 @@ def main():
                     with col_c:
                         st.metric("Theft", f"{metrics.get('theft_score', 0)}%")
 
-                    # Display detailed events - FIXED: check if crime_events_list exists
                     if metrics.get('crime_events', 0) > 0:
-                        with st.expander(f"📋 {metrics['crime_events']} Events Detected", expanded=True):
-                            # Get the events list from session state
-                            if 'last_analysis' in st.session_state and 'crime_events_list' in \
-                                    st.session_state['last_analysis']['metrics']:
-                                events_list = st.session_state['last_analysis']['metrics']['crime_events_list']
-                            else:
-                                # Try to get from analyzer history
-                                events_list = []
-                                if len(analyzer.analysis_history) > 0:
-                                    events_list = analyzer.analysis_history[-1].get('crime_events', [])
-
-                            if events_list and len(events_list) > 0:
-                                for idx, event in enumerate(events_list[:20]):  # Show up to 20 events
-                                    event_time = event.get('time', 0)
-                                    event_type = event.get('type', 'UNKNOWN')
-                                    event_score = event.get('score', 0)
-                                    event_conf = event.get('confidence', 0)
-
-                                    # Color code based on score
-                                    if event_score > 70:
-                                        event_color = "🔴"
-                                    elif event_score > 40:
-                                        event_color = "🟠"
-                                    else:
-                                        event_color = "🟡"
-
-                                    st.markdown(f"""
-                                    <div style="background: rgba(255, 71, 87, 0.1); padding: 8px; margin: 5px 0; border-radius: 5px; border-left: 3px solid {'#ff4757' if event_score > 70 else '#feca57' if event_score > 40 else '#00ff88'};">
-                                        <b>⏱️ {event_time}s</b> - {event_color} <b>{event_type}</b><br>
-                                        <span style="font-size: 12px;">Score: {event_score}% | Confidence: {event_conf}%</span>
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                            else:
-                                st.info("No detailed event data available")
-                    else:
-                        st.success("✅ No suspicious events detected")
+                        with st.expander(f"📋 {metrics['crime_events']} Events"):
+                            for event in metrics.get('crime_events', [])[:10]:
+                                st.warning(
+                                    f"⏱️ {event.get('time', 0)}s - {event.get('type', 'Unknown')} ({event.get('score', 0)}%)")
             else:
                 st.info("Select a video and click ANALYZE")
 
@@ -1231,9 +1190,7 @@ def main():
 
         if analyzer.analysis_history:
             history = []
-            # FIXED: Convert deque to list for slicing
-            history_list = list(analyzer.analysis_history)
-            for entry in history_list[-20:]:  # Get last 20 entries safely
+            for entry in analyzer.analysis_history[-20:]:
                 history.append({
                     'Time': entry['timestamp'].strftime('%H:%M:%S'),
                     'Video': entry['video'][:30],
@@ -1242,9 +1199,9 @@ def main():
                 })
             st.dataframe(pd.DataFrame(history), use_container_width=True)
 
-            if len(history_list) > 1:
+            if len(analyzer.analysis_history) > 1:
                 fig = go.Figure()
-                scores = [e['metrics']['overall_crime_score'] for e in history_list[-50:]]  # Last 50 entries
+                scores = [e['metrics']['overall_crime_score'] for e in analyzer.analysis_history]
                 fig.add_trace(go.Scatter(y=scores, mode='lines+markers', line=dict(color='#ff4757')))
                 fig.add_hline(y=threshold, line_dash="dash", line_color="yellow")
                 fig.update_layout(title="Crime Score Trend", xaxis_title="Analysis", yaxis_title="Score (%)",

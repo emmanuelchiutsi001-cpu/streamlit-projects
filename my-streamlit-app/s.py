@@ -688,7 +688,7 @@ class TimesheetApp:
 
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
-                if st.button("🚪 Login", type="primary", use_container_width=True):
+                if st.button("🚪 Login", type="primary", width="stretch"):
                     user = self.data_manager.login(username, password)
                     if user:
                         st.session_state.current_user = user
@@ -698,7 +698,7 @@ class TimesheetApp:
                         st.session_state.login_error = "Invalid username or password"
 
             with col_btn2:
-                if st.button("🔄 Clear", use_container_width=True):
+                if st.button("🔄 Clear", width="stretch"):
                     st.session_state.login_error = None
 
             if st.session_state.login_error:
@@ -790,7 +790,7 @@ class TimesheetApp:
             else:
                 st.markdown('<span class="clocked-out">⚪ Not Clocked In</span>', unsafe_allow_html=True)
         with col4:
-            if st.button("🚪 Logout", use_container_width=True):
+            if st.button("🚪 Logout", width="stretch"):
                 st.session_state.current_user = None
                 st.rerun()
 
@@ -824,7 +824,7 @@ class TimesheetApp:
                                         ["Main Gate", "Office", "Production Floor", "Control Room", "Workshop"],
                                         key="quick_location")
 
-                if st.button("🟢 CLOCK IN", type="primary", use_container_width=True):
+                if st.button("🟢 CLOCK IN", type="primary", width="stretch"):
                     entry = {
                         'user_id': user['id'],
                         'employee_id': user['id'],  # Use user ID as employee ID for staff
@@ -855,7 +855,7 @@ class TimesheetApp:
                 hours_worked = duration.total_seconds() / 3600
                 st.metric("Current Duration", f"{hours_worked:.1f} hours")
 
-                if st.button("🔴 CLOCK OUT", type="primary", use_container_width=True):
+                if st.button("🔴 CLOCK OUT", type="primary", width="stretch"):
                     # Find and update the entry
                     for entry in st.session_state.time_entries:
                         if entry['id'] == open_entry['id']:
@@ -976,7 +976,7 @@ class TimesheetApp:
                     display_df['clock_in'] = display_df['clock_in'].dt.strftime('%H:%M')
                     display_df['clock_out'] = display_df['clock_out'].apply(
                         lambda x: x.strftime('%H:%M') if pd.notna(x) else '--')
-                    st.dataframe(display_df, use_container_width=True)
+                    st.dataframe(display_df, width="stretch")
 
             # My recent entries
             st.subheader("📋 My Recent Timesheets")
@@ -988,7 +988,7 @@ class TimesheetApp:
                 display_df['clock_in'] = display_df['clock_in'].dt.strftime('%Y-%m-%d %H:%M')
                 display_df['clock_out'] = display_df['clock_out'].apply(
                     lambda x: x.strftime('%H:%M') if pd.notna(x) else '--')
-                st.dataframe(display_df, use_container_width=True)
+                st.dataframe(display_df, width="stretch")
 
         with right_col:
             st.subheader("📢 Recent Messages")
@@ -1160,7 +1160,7 @@ class TimesheetApp:
                 display_df['clock_out'] = display_df['clock_out'].apply(
                     lambda x: x.strftime('%H:%M') if pd.notna(x) else '--')
 
-                st.dataframe(display_df, use_container_width=True)
+                st.dataframe(display_df, width="stretch")
 
                 # Summary stats
                 total_hours = df_today['normal_hours'].sum() + df_today['overtime_hours'].sum()
@@ -1597,7 +1597,7 @@ class TimesheetApp:
         st.subheader("Attendance Trend")
         daily_attendance = df_filtered.groupby(df_filtered['clock_in'].dt.date).size().reset_index(name='count')
         fig = px.line(daily_attendance, x='clock_in', y='count', title='Daily Attendance')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Cost Analysis
         if 'hourly_rate' in df_filtered.columns:
@@ -1612,7 +1612,7 @@ class TimesheetApp:
             # Cost by department
             dept_costs = df_filtered.groupby('department')['cost'].sum().reset_index()
             fig2 = px.pie(dept_costs, values='cost', names='department', title='Cost by Department')
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
     def render_user_management(self):
         """User management for admins"""
@@ -1629,7 +1629,7 @@ class TimesheetApp:
             st.subheader("Current Users")
             users_df = pd.DataFrame(st.session_state.users)
             display_cols = ['username', 'name', 'role', 'department', 'shift', 'hourly_rate', 'is_active']
-            st.dataframe(users_df[display_cols], use_container_width=True)
+            st.dataframe(users_df[display_cols], width="stretch")
 
         with tab2:
             st.subheader("Add New User")

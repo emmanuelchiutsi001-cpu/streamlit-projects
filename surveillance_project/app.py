@@ -1,3 +1,4 @@
+# app.py - Complete Streamlit Application
 import streamlit as st
 import os
 import glob
@@ -28,6 +29,7 @@ import pathlib
 import random
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from collections import Counter
+from model_loader import load_pretrained_model
 
 warnings.filterwarnings('ignore')
 
@@ -37,9 +39,15 @@ os.environ['OPENCV_FFMPEG_LOGLEVEL'] = '-8'
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 # -- CONFIGURATION --
-GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
+# Use Streamlit secrets for sensitive data
+if 'GMAIL_PASSWORD' in st.secrets:
+    GMAIL_APP_PASSWORD = st.secrets["GMAIL_PASSWORD"]
+else:
+    GMAIL_APP_PASSWORD = "twmlrauqerkvxark"  # Fallback for local testing
+    st.warning("⚠️ Using default Gmail password. For production, set secrets in Streamlit Cloud.")
+
 ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
-DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\dataset-video-split"
+DATASET_PATH = "./dataset"  # Changed for deployment - create this folder or use temp
 
 # Define all crime categories
 CRIME_CATEGORIES = [
@@ -170,433 +178,83 @@ def extract_single_frame(video_path):
         return None
 
 
-# -- OPTIMIZED DATASET (SINGLE FRAME, FAST) --
-class FastVideoDataset(Dataset):
-    def __init__(self, video_paths, labels, transform=None, is_training=True):
-        self.video_paths = video_paths
-        self.labels = labels
-        self.transform = transform
-        self.is_training = is_training
-
-    def __len__(self):
-        return len(self.video_paths)
-
-    def __getitem__(self, idx):
-        video_path = self.video_paths[idx]
-        label = self.labels[idx]
-
-        # Extract single frame (fast)
-        frame = extract_single_frame(video_path)
-
-        if frame is None:
-            frame = np.zeros((224, 224, 3), dtype=np.uint8)
-
-        if self.transform:
-            frame = self.transform(frame)
-
-        return frame, label
-
-
-# -- OPTIMIZED MODEL WITHOUT BATCHNORM ISSUES --
-class OptimizedCrimeClassifier(nn.Module):
-    def __init__(self, num_classes=21):
-        super(OptimizedCrimeClassifier, self).__init__()
-        # Use ResNet18 (faster, good enough)
-        self.backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
-
-        # Freeze early layers to prevent overfitting and speed up training
-        for param in self.backbone.layer1.parameters():
-            param.requires_grad = False
-        for param in self.backbone.layer2.parameters():
-            param.requires_grad = False
-
-        num_features = self.backbone.fc.in_features
-
-        # Simplified classifier without BatchNorm (to avoid batch size issues)
-        self.backbone.fc = nn.Sequential(
-            nn.Dropout(0.4),  # Increased dropout
-            nn.Linear(num_features, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes)
-        )
-
-    def get_trainable_params_count(self):
-        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        total = sum(p.numel() for p in self.parameters())
-        return trainable, total
-
-    def forward(self, x):
-        return self.backbone(x)
-
-
-# -- OPTIMIZED TRAINER --
-class OptimizedCrimeTrainer:
+# -- CRIME DETECTION MODEL (MODIFIED TO LOAD PRE-TRAINED) --
+class CrimeDetectionModel:
     def __init__(self):
-        self.model = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.class_names = CRIME_CATEGORIES
-        self.trained = False
-        self.performance_metrics = {}
-        self.training_info = {}
-        self.inverse_class_mapping = {0: 0}
-        self.effective_class_names = ['normal_videos']
-        self.class_mapping = {}
-        self.training_history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+        self.model_loaded = False
+        self.training_status = "Loading Model"
+        self.frame_buffer = deque(maxlen=5)
 
-    def map_filename_to_category(self, filename):
-        """Map filename patterns to categories"""
-        name = os.path.splitext(filename)[0].lower()
+        # Load pre-trained model instead of training
+        with st.spinner("🤖 Loading pre-trained model..."):
+            model_data = load_pretrained_model()
 
-        # Direct mapping
-        for category in self.class_names:
-            if category in name or name.startswith(category):
-                return category
-
-        # Special mappings
-        special_mappings = {
-            'standingstill': 'standing_still', 'standstill': 'standing_still',
-            'meetandsplit': 'meet_and_split', 'road_accidents': 'roadaccidents',
-            'walkingreadingbook': 'walking_while_reading_book',
-            'walkingusingphone': 'walking_while_using_phone',
-            'burglary': 'bulglary'
-        }
-
-        for key, value in special_mappings.items():
-            if key in name:
-                return value
-
-        return None
-
-    def prepare_dataset_from_folder(self, folder_path):
-        """Prepare dataset from folder"""
-        video_paths = []
-        labels = []
-        class_counts = defaultdict(int)
-
-        if not os.path.exists(folder_path):
-            return video_paths, labels, class_counts
-
-        videos = safe_get_video_files(folder_path)
-
-        for video in videos:
-            filename = os.path.basename(video)
-            category = self.map_filename_to_category(filename)
-
-            if category is not None and category in self.class_names:
-                if check_video_file(video)[0]:
-                    class_idx = self.class_names.index(category)
-                    video_paths.append(video)
-                    labels.append(class_idx)
-                    class_counts[category] += 1
-
-        return video_paths, labels, class_counts
-
-    def get_transforms(self):
-        """Get training and validation transforms"""
-        # Training transforms (light augmentation to avoid overfitting)
-        train_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-        # Validation transforms
-        val_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-        return train_transform, val_transform
-
-    def train_fast_model(self, dataset_path, progress_callback=None):
-        """Train model with fixes for batch size issues"""
-        try:
-            if progress_callback:
-                progress_callback(0.05, "🔄 Preparing dataset...")
-
-            train_path = os.path.join(dataset_path, 'train')
-
-            if not os.path.exists(train_path):
-                if progress_callback:
-                    progress_callback(1.0, f"❌ Train folder not found")
-                return False
-
-            # Prepare dataset
-            video_paths, labels, class_counts = self.prepare_dataset_from_folder(train_path)
-
-            if len(video_paths) == 0:
-                if progress_callback:
-                    progress_callback(1.0, "⚠️ No valid videos found")
-                return False
-
-            # Get unique classes with enough samples
-            unique_classes = sorted(list(set(labels)))
-            # Filter classes with at least 2 samples
-            valid_classes = []
-            for class_idx in unique_classes:
-                class_name = self.class_names[class_idx]
-                if class_counts[class_name] >= 2:
-                    valid_classes.append(class_idx)
-
-            if len(valid_classes) < 2:
-                if progress_callback:
-                    progress_callback(1.0, "⚠️ Need at least 2 classes with 2+ samples each")
-                return False
-
-            # Filter data to valid classes
-            valid_indices = [i for i, label in enumerate(labels) if label in valid_classes]
-            video_paths = [video_paths[i] for i in valid_indices]
-            labels = [labels[i] for i in valid_indices]
-
-            # Re-map labels
-            class_to_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(valid_classes)}
-            remapped_labels = [class_to_idx[label] for label in labels]
-
-            effective_class_names = [self.class_names[i] for i in valid_classes]
-            effective_num_classes = len(effective_class_names)
-
-            if progress_callback:
-                progress_callback(0.15, f"✅ Found {len(video_paths)} videos across {effective_num_classes} categories")
-                for cat, count in class_counts.items():
-                    if count > 0 and self.class_names.index(cat) in valid_classes:
-                        progress_callback(0.15, f"  - {cat}: {count} videos")
-
-            # Get transforms
-            train_transform, val_transform = self.get_transforms()
-
-            # Create full dataset
-            full_dataset = FastVideoDataset(video_paths, remapped_labels, train_transform, is_training=True)
-
-            # Stratified split
-            from sklearn.model_selection import StratifiedShuffleSplit
-            labels_array = np.array(remapped_labels)
-            sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-            train_idx, val_idx = next(sss.split(video_paths, labels_array))
-
-            # Create datasets
-            train_dataset = torch.utils.data.Subset(full_dataset, train_idx)
-            val_video_paths = [video_paths[i] for i in val_idx]
-            val_labels = [remapped_labels[i] for i in val_idx]
-            val_dataset = FastVideoDataset(val_video_paths, val_labels, val_transform, is_training=False)
-
-            # Use DropLast to avoid batch size 1 issues
-            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0, drop_last=True)
-            val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
-
-            if progress_callback:
-                progress_callback(0.3, f"🧠 Building model on {self.device}...")
-                progress_callback(0.3, f"📊 Train: {len(train_dataset)} | Val: {len(val_dataset)}")
-
-            # Initialize model
-            self.model = OptimizedCrimeClassifier(num_classes=effective_num_classes)
+        if model_data:
+            self.model = model_data['model']
             self.model = self.model.to(self.device)
+            self.class_mapping = model_data['class_mapping']
+            self.inverse_class_mapping = model_data['inverse_class_mapping']
+            self.effective_class_names = model_data['effective_class_names']
+            self.performance_metrics = model_data['performance_metrics']
+            self.training_info = model_data['training_info']
+            self.training_history = model_data['training_history']
+            self.model_loaded = True
+            self.training_status = "Model Loaded"
+            st.success(f"✅ Model loaded! Accuracy: {self.performance_metrics.get('accuracy', 0):.1f}%")
+        else:
+            self.model_loaded = False
+            self.training_status = "Model Not Found"
+            st.error("❌ Could not load model. Please ensure saved_model.pkl exists.")
 
-            # Count parameters
-            trainable, total = self.model.get_trainable_params_count()
-            if progress_callback:
-                progress_callback(0.3, f"📊 Params: {trainable:,} trainable / {total:,} total")
+        self.preprocess = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
 
-            # Calculate class weights
-            class_counts_array = np.array([class_counts[self.class_names[c]] for c in valid_classes])
-            class_weights = 1.0 / class_counts_array
-            class_weights = class_weights / class_weights.sum() * effective_num_classes
-            class_weights_tensor = torch.FloatTensor(class_weights).to(self.device)
+    def get_performance_metrics(self):
+        if self.model_loaded and self.performance_metrics:
+            return self.performance_metrics
+        return {'accuracy': 0, 'precision': 0, 'recall': 0, 'f1_score': 0}
 
-            # Loss with label smoothing
-            criterion = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
+    def get_training_info(self):
+        return self.training_info if self.model_loaded else {}
 
-            # Optimizer with weight decay
-            optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=0.01)
+    def get_training_history(self):
+        return self.training_history if self.model_loaded else {'train_acc': [], 'val_acc': []}
 
-            # Scheduler
-            scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+    def add_frame_to_buffer(self, frame):
+        processed = self.preprocess(frame)
+        self.frame_buffer.append(processed)
+        return len(self.frame_buffer)
 
-            if progress_callback:
-                progress_callback(0.35, f"🎬 Training started...")
+    def predict_from_buffer(self):
+        """Predict using majority vote"""
+        if len(self.frame_buffer) == 0 or not self.model_loaded:
+            return 0, 0.0
 
-            # Training loop
-            num_epochs = 20
-            best_val_acc = 0
-            best_model_state = None
-            patience = 6
-            patience_counter = 0
-            best_epoch = 0
+        predictions = []
+        confidences = []
 
-            for epoch in range(num_epochs):
-                # Training
-                self.model.train()
-                train_loss = 0.0
-                train_correct = 0
-                train_total = 0
+        for frame in list(self.frame_buffer):
+            pred_class, confidence = self.predict_frame(frame.unsqueeze(0))
+            predictions.append(pred_class)
+            confidences.append(confidence)
 
-                for i, (images, labels_batch) in enumerate(train_loader):
-                    images = images.to(self.device)
-                    labels_batch = labels_batch.to(self.device)
+        # Majority vote
+        counter = Counter(predictions)
+        most_common = counter.most_common(1)[0][0]
 
-                    optimizer.zero_grad()
-                    outputs = self.model(images)
-                    loss = criterion(outputs, labels_batch)
-                    loss.backward()
+        # Average confidence for majority class
+        avg_confidence = np.mean([confidences[i] for i, p in enumerate(predictions) if p == most_common])
 
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    optimizer.step()
-
-                    train_loss += loss.item()
-                    _, predicted = torch.max(outputs, 1)
-                    train_total += labels_batch.size(0)
-                    train_correct += (predicted == labels_batch).sum().item()
-
-                    if progress_callback and i % 10 == 0:
-                        progress = 0.35 + (epoch * len(train_loader) + i) / (num_epochs * len(train_loader)) * 0.55
-                        progress_callback(progress,
-                                          f"Epoch {epoch + 1}/{num_epochs} | Loss: {loss.item():.3f} | Acc: {100 * train_correct / train_total:.1f}%")
-
-                train_acc = 100 * train_correct / train_total if train_total > 0 else 0
-                avg_train_loss = train_loss / len(train_loader)
-
-                # Validation
-                if progress_callback:
-                    progress_callback(0.9, f"📈 Validating...")
-
-                self.model.eval()
-                all_preds = []
-                all_labels = []
-                val_correct = 0
-                val_total = 0
-                val_loss = 0.0
-
-                with torch.no_grad():
-                    for images, labels_batch in val_loader:
-                        images = images.to(self.device)
-                        labels_batch = labels_batch.to(self.device)
-                        outputs = self.model(images)
-                        loss = criterion(outputs, labels_batch)
-                        val_loss += loss.item()
-                        _, predicted = torch.max(outputs, 1)
-                        val_total += labels_batch.size(0)
-                        val_correct += (predicted == labels_batch).sum().item()
-                        all_preds.extend(predicted.cpu().numpy())
-                        all_labels.extend(labels_batch.cpu().numpy())
-
-                val_acc = 100 * val_correct / val_total if val_total > 0 else 0
-                avg_val_loss = val_loss / len(val_loader)
-
-                # Update scheduler
-                scheduler.step(val_acc)
-
-                # Store history
-                self.training_history['train_loss'].append(avg_train_loss)
-                self.training_history['val_loss'].append(avg_val_loss)
-                self.training_history['train_acc'].append(train_acc)
-                self.training_history['val_acc'].append(val_acc)
-
-                # Check for best model
-                if val_acc > best_val_acc:
-                    best_val_acc = val_acc
-                    best_model_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
-                    patience_counter = 0
-                    best_epoch = epoch + 1
-                    if progress_callback:
-                        progress_callback(0.9, f"✨ New best! Val Acc: {val_acc:.1f}%")
-                else:
-                    patience_counter += 1
-
-                # Get current learning rate
-                current_lr = optimizer.param_groups[0]['lr']
-
-                if progress_callback:
-                    progress_callback(0.9,
-                                      f"📊 E{epoch + 1}: Train={train_acc:.1f}% | Val={val_acc:.1f}% | LR={current_lr:.6f}")
-
-                # Early stopping
-                if patience_counter >= patience:
-                    if progress_callback:
-                        progress_callback(0.9, f"⏹️ Early stopping at epoch {epoch + 1} (best was epoch {best_epoch})")
-                    break
-
-            # Load best model
-            if best_model_state is not None:
-                self.model.load_state_dict(best_model_state)
-
-            # Final evaluation
-            if progress_callback:
-                progress_callback(0.95, "📊 Computing final metrics...")
-
-            # Calculate metrics
-            if len(all_preds) > 0:
-                self.performance_metrics = {
-                    'accuracy': float(accuracy_score(all_labels, all_preds) * 100),
-                    'precision': float(
-                        precision_score(all_labels, all_preds, average='weighted', zero_division=0) * 100),
-                    'recall': float(recall_score(all_labels, all_preds, average='weighted', zero_division=0) * 100),
-                    'f1_score': float(f1_score(all_labels, all_preds, average='weighted', zero_division=0) * 100)
-                }
-
-                # Per-class accuracy
-                cm = confusion_matrix(all_labels, all_preds)
-                per_class_acc = {}
-                for i, class_name in enumerate(effective_class_names):
-                    if i < len(cm):
-                        tp = cm[i, i]
-                        total_class = cm[i, :].sum()
-                        per_class_acc[class_name] = float(tp / total_class * 100) if total_class > 0 else 0
-                self.performance_metrics['per_class_accuracy'] = per_class_acc
-
-            # Calculate final train accuracy (for info)
-            final_train_acc = self.training_history['train_acc'][-1] if self.training_history['train_acc'] else 0
-
-            self.training_info = {
-                'class_counts': {k: v for k, v in class_counts.items() if self.class_names.index(k) in valid_classes},
-                'effective_classes': effective_class_names,
-                'num_classes': effective_num_classes,
-                'train_samples': len(train_dataset),
-                'val_samples': len(val_dataset),
-                'num_epochs': epoch + 1,
-                'best_val_accuracy': best_val_acc,
-                'best_epoch': best_epoch,
-                'trainable_params': trainable,
-                'total_params': total,
-                'learning_rate': 0.0005,
-                'model_architecture': 'ResNet18 (Optimized)',
-                'total_videos': len(video_paths),
-                'final_train_acc': final_train_acc,
-                'final_val_acc': best_val_acc
-            }
-
-            self.class_mapping = class_to_idx
-            self.inverse_class_mapping = {v: k for k, v in class_to_idx.items()}
-            self.effective_class_names = effective_class_names
-            self.trained = True
-
-            if progress_callback:
-                gap = final_train_acc - best_val_acc
-                progress_callback(1.0, f"✅ Training complete! Validation Accuracy: {best_val_acc:.1f}%")
-                progress_callback(1.0, f"📊 Training-Validation Gap: {gap:.1f}%")
-
-            return True
-
-        except Exception as e:
-            print(f"Training error: {e}")
-            import traceback
-            traceback.print_exc()
-            if progress_callback:
-                progress_callback(1.0, f"❌ Error: {str(e)[:100]}")
-            return False
+        return most_common, avg_confidence
 
     def predict_frame(self, frame_tensor):
         """Predict class for a frame tensor"""
-        if not self.trained or self.model is None:
+        if not self.model_loaded or self.model is None:
             return 0, 0.0
 
         try:
@@ -611,105 +269,15 @@ class OptimizedCrimeTrainer:
                 predicted = torch.argmax(outputs, dim=1)
                 confidence = probabilities[0][predicted[0]].item()
 
-                if hasattr(self, 'inverse_class_mapping') and self.inverse_class_mapping:
-                    original_class = self.inverse_class_mapping.get(predicted[0].item(), 0)
-                else:
-                    original_class = predicted[0].item()
-
+                # Map back to original class index
+                original_class = self.inverse_class_mapping.get(predicted[0].item(), 0)
                 return original_class, confidence
         except Exception as e:
             print(f"Prediction error: {e}")
             return 0, 0.0
 
 
-# -- CRIME DETECTION MODEL --
-class CrimeDetectionModel:
-    def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.trainer = OptimizedCrimeTrainer()
-        self.model_loaded = False
-        self.training_status = "Not Trained"
-        self.frame_buffer = deque(maxlen=5)
-
-        # Check dataset and train
-        try:
-            train_path = os.path.join(DATASET_PATH, "train")
-            if os.path.exists(train_path):
-                videos = safe_get_video_files(train_path)
-                if len(videos) > 0:
-                    with st.spinner(f"🎯 Training on {len(videos)} videos..."):
-                        progress_bar = st.progress(0)
-
-                        def update_progress(progress, message):
-                            progress_bar.progress(progress)
-                            if progress < 1.0:
-                                st.caption(message)
-
-                        success = self.trainer.train_fast_model(DATASET_PATH, update_progress)
-                        if success:
-                            self.model_loaded = True
-                            self.training_status = "Model Trained"
-                            st.success(f"✅ Training complete!")
-                        else:
-                            self.model_loaded = False
-                            self.training_status = "Training Failed"
-                        progress_bar.empty()
-                else:
-                    st.info("📁 'train' folder found but no videos inside.")
-            else:
-                st.info("📁 Please create the 'train' folder with videos.")
-        except Exception as e:
-            st.warning(f"Model init: {e}")
-            self.model_loaded = False
-            self.training_status = "Error"
-
-        self.preprocess = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-
-    def get_performance_metrics(self):
-        if self.trainer.trained and self.trainer.performance_metrics:
-            return self.trainer.performance_metrics
-        return {'accuracy': 0, 'precision': 0, 'recall': 0, 'f1_score': 0}
-
-    def get_training_info(self):
-        return self.trainer.training_info
-
-    def get_training_history(self):
-        return self.trainer.training_history
-
-    def add_frame_to_buffer(self, frame):
-        processed = self.preprocess(frame)
-        self.frame_buffer.append(processed)
-        return len(self.frame_buffer)
-
-    def predict_from_buffer(self):
-        """Predict using majority vote"""
-        if len(self.frame_buffer) == 0:
-            return 0, 0.0
-
-        predictions = []
-        confidences = []
-
-        for frame in list(self.frame_buffer):
-            pred_class, confidence = self.trainer.predict_frame(frame.unsqueeze(0))
-            predictions.append(pred_class)
-            confidences.append(confidence)
-
-        # Majority vote
-        counter = Counter(predictions)
-        most_common = counter.most_common(1)[0][0]
-
-        # Average confidence for majority class
-        avg_confidence = np.mean([confidences[i] for i, p in enumerate(predictions) if p == most_common])
-
-        return most_common, avg_confidence
-
-
-# -- SIMPLIFIED ANALYZER --
+# -- ADVANCED ANALYZER --
 class AdvancedCrimeAnalyzer:
     def __init__(self, model):
         self.model = model
@@ -763,7 +331,7 @@ class AdvancedCrimeAnalyzer:
         duration = total_frames / fps if fps > 0 else 0
 
         frame_count = 0
-        crime_events = []  # This should be a list of dictionaries
+        crime_events = []
         model_predictions = []
         prediction_confidences = []
 
@@ -774,7 +342,7 @@ class AdvancedCrimeAnalyzer:
         self.model.frame_buffer.clear()
 
         consecutive_crime = 0
-        event_list = []  # Store detailed events
+        event_list = []
 
         for frame_idx in range(0, total_frames, sample_rate):
             try:
@@ -814,7 +382,7 @@ class AdvancedCrimeAnalyzer:
                             'confidence': round(confidence * 100, 1)
                         }
                         event_list.append(event_data)
-                        crime_events.append(event_data)  # Keep as list of dicts
+                        crime_events.append(event_data)
 
                         # Reset counter after alert to avoid spam
                         consecutive_crime = 0
@@ -890,8 +458,8 @@ class AdvancedCrimeAnalyzer:
             'crime_events': len(crime_events),
             'model_confidence': float(round(avg_confidence * 100, 1)),
             'is_normal_video': is_normal_video,
-            'model_trained': self.model.trainer.trained,
-            'model_architecture': 'ResNet18 (Optimized)'
+            'model_trained': self.model.model_loaded,
+            'model_architecture': 'ResNet18 (Pre-trained)'
         }
 
 
@@ -923,18 +491,6 @@ class VideoScanner:
             else:
                 split_stats[split] = 0
         return split_stats
-
-
-# -- INITIALIZE COMPONENTS --
-@st.cache_resource
-def init_components():
-    crime_model = CrimeDetectionModel()
-    analyzer = AdvancedCrimeAnalyzer(crime_model)
-    scanner = VideoScanner()
-    return crime_model, analyzer, scanner
-
-
-crime_model, analyzer, scanner = init_components()
 
 
 # -- HELPER FUNCTIONS --
@@ -970,6 +526,7 @@ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         yag.close()
         return True
     except Exception as e:
+        print(f"Email error: {e}")
         return False
 
 
@@ -1025,7 +582,7 @@ def display_performance_metrics():
 
     st.markdown("### 📊 PERFORMANCE")
 
-    if crime_model.trainer.trained:
+    if crime_model.model_loaded:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Accuracy", f"{perf_metrics.get('accuracy', 0):.1f}%")
@@ -1039,7 +596,7 @@ def display_performance_metrics():
         if training_info:
             st.info(f"""
             **Model:** {training_info.get('model_architecture', 'ResNet18')}
-            **Best Val Acc:** {training_info.get('best_val_accuracy', 0):.1f}% (Epoch {training_info.get('best_epoch', 0)})
+            **Best Val Acc:** {training_info.get('best_val_accuracy', 0):.1f}% 
             **Samples:** Train={training_info.get('train_samples', 0)} | Val={training_info.get('val_samples', 0)}
             """)
 
@@ -1047,24 +604,30 @@ def display_performance_metrics():
         if training_history and training_history.get('train_acc'):
             fig = go.Figure()
             epochs = list(range(1, len(training_history['train_acc']) + 1))
-            fig.add_trace(go.Scatter(x=epochs, y=training_history['train_acc'], mode='lines',
-                                     name='Training', line=dict(color='#00fbff')))
-            fig.add_trace(go.Scatter(x=epochs, y=training_history['val_acc'], mode='lines',
-                                     name='Validation', line=dict(color='#ff4757')))
+            if len(training_history['train_acc']) > 0:
+                fig.add_trace(go.Scatter(x=epochs, y=training_history['train_acc'], mode='lines',
+                                         name='Training', line=dict(color='#00fbff')))
+            if len(training_history['val_acc']) > 0:
+                fig.add_trace(go.Scatter(x=epochs, y=training_history['val_acc'], mode='lines',
+                                         name='Validation', line=dict(color='#ff4757')))
             fig.update_layout(title="Training Progress", xaxis_title="Epoch", yaxis_title="Accuracy (%)",
                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white',
                               height=250)
             st.plotly_chart(fig, use_container_width=True)
-
-        if 'per_class_accuracy' in perf_metrics:
-            with st.expander("Per-Class Accuracy"):
-                for class_name, acc in sorted(perf_metrics['per_class_accuracy'].items(), key=lambda x: x[1],
-                                              reverse=True)[:10]:
-                    color = "#00ff88" if acc > 70 else "#feca57" if acc > 40 else "#ff4757"
-                    st.markdown(f"`{class_name.upper()}`: **<span style='color:{color}'>{acc:.1f}%</span>**",
-                                unsafe_allow_html=True)
     else:
-        st.info("🤖 Model not trained. Add videos to 'train' folder.")
+        st.info("🤖 Model not loaded. Please ensure saved_model.pkl exists.")
+
+
+# -- INITIALIZE COMPONENTS --
+@st.cache_resource
+def init_components():
+    crime_model = CrimeDetectionModel()
+    analyzer = AdvancedCrimeAnalyzer(crime_model)
+    scanner = VideoScanner()
+    return crime_model, analyzer, scanner
+
+
+crime_model, analyzer, scanner = init_components()
 
 
 # -- MAIN APP --
@@ -1074,7 +637,7 @@ def main():
     st.markdown("""
     <div class="main-header">
         <h1>🚨 AI COMMUNITY SECURITY ANALYTICS</h1>
-        <p style="color: #00fbff;">ResNet18 | Optimized for Speed | Anti-Overfitting</p>
+        <p style="color: #00fbff;">ResNet18 | Pre-trained Model | Real-time Detection</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1102,7 +665,7 @@ def main():
         st.text(f"Test: {split_stats.get('test', 0)}")
         st.text(f"Valid: {split_stats.get('valid', 0)}")
 
-        st.markdown(f"**Model:** {'✅ Trained' if crime_model.trainer.trained else '⚠️ Not Trained'}")
+        st.markdown(f"**Model:** {'✅ Loaded' if crime_model.model_loaded else '⚠️ Not Loaded'}")
         st.markdown(f"**Device:** {crime_model.device}")
 
         display_performance_metrics()
@@ -1118,21 +681,12 @@ def main():
             st.markdown('<div class="css-card">', unsafe_allow_html=True)
             st.markdown("### VIDEO SOURCE")
 
-            source = st.radio("Source:", ["Dataset", "Upload"], horizontal=True)
+            source = st.radio("Source:", ["Upload"], horizontal=True)  # Changed to Upload only for deployment
             video_path = None
             video_filename = None
 
-            if source == "Dataset":
-                all_videos = scanner.get_all_videos(DATASET_PATH)
-                if all_videos:
-                    video_options = {os.path.basename(v): v for v in all_videos}
-                    selected_video = st.selectbox("Choose:", list(video_options.keys()))
-                    video_path = video_options[selected_video]
-                    video_filename = selected_video
-                else:
-                    st.warning("No videos found")
-            else:
-                uploaded = st.file_uploader("Upload", type=['mp4', 'avi', 'mkv', 'mov'])
+            if source == "Upload":
+                uploaded = st.file_uploader("Upload Video", type=['mp4', 'avi', 'mkv', 'mov'])
                 if uploaded:
                     tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
                     tfile.write(uploaded.read())
@@ -1140,7 +694,7 @@ def main():
                     video_filename = uploaded.name
                     st.success(f"Uploaded: {video_filename}")
 
-            if video_path and st.checkbox("Show Video"):
+            if video_path and st.checkbox("Show Video Preview"):
                 with open(video_path, 'rb') as f:
                     st.video(f.read())
 
@@ -1184,27 +738,17 @@ def main():
                     with col_c:
                         st.metric("Theft", f"{metrics.get('theft_score', 0)}%")
 
-                    # Display detailed events - FIXED: check if crime_events_list exists
+                    # Display detailed events
                     if metrics.get('crime_events', 0) > 0:
                         with st.expander(f"📋 {metrics['crime_events']} Events Detected", expanded=True):
-                            # Get the events list from session state
-                            if 'last_analysis' in st.session_state and 'crime_events_list' in \
-                                    st.session_state['last_analysis']['metrics']:
-                                events_list = st.session_state['last_analysis']['metrics']['crime_events_list']
-                            else:
-                                # Try to get from analyzer history
-                                events_list = []
-                                if len(analyzer.analysis_history) > 0:
-                                    events_list = analyzer.analysis_history[-1].get('crime_events', [])
-
+                            events_list = metrics.get('crime_events_list', [])
                             if events_list and len(events_list) > 0:
-                                for idx, event in enumerate(events_list[:20]):  # Show up to 20 events
+                                for idx, event in enumerate(events_list[:20]):
                                     event_time = event.get('time', 0)
                                     event_type = event.get('type', 'UNKNOWN')
                                     event_score = event.get('score', 0)
                                     event_conf = event.get('confidence', 0)
 
-                                    # Color code based on score
                                     if event_score > 70:
                                         event_color = "🔴"
                                     elif event_score > 40:
@@ -1223,17 +767,16 @@ def main():
                     else:
                         st.success("✅ No suspicious events detected")
             else:
-                st.info("Select a video and click ANALYZE")
+                st.info("📹 Upload a video and click ANALYZE to begin")
 
     elif selected == "Analytics History":
         st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### HISTORY")
+        st.markdown("### 📜 ANALYSIS HISTORY")
 
         if analyzer.analysis_history:
             history = []
-            # FIXED: Convert deque to list for slicing
             history_list = list(analyzer.analysis_history)
-            for entry in history_list[-20:]:  # Get last 20 entries safely
+            for entry in history_list[-20:]:
                 history.append({
                     'Time': entry['timestamp'].strftime('%H:%M:%S'),
                     'Video': entry['video'][:30],
@@ -1244,56 +787,74 @@ def main():
 
             if len(history_list) > 1:
                 fig = go.Figure()
-                scores = [e['metrics']['overall_crime_score'] for e in history_list[-50:]]  # Last 50 entries
+                scores = [e['metrics']['overall_crime_score'] for e in history_list[-50:]]
                 fig.add_trace(go.Scatter(y=scores, mode='lines+markers', line=dict(color='#ff4757')))
                 fig.add_hline(y=threshold, line_dash="dash", line_color="yellow")
                 fig.update_layout(title="Crime Score Trend", xaxis_title="Analysis", yaxis_title="Score (%)",
                                   paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white',
                                   height=300)
                 st.plotly_chart(fig, use_container_width=True)
+
+            # Detection metrics
+            detection_metrics = analyzer.get_detection_metrics()
+            if detection_metrics['samples'] > 0:
+                st.markdown("### 🎯 Detection Performance")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Accuracy", f"{detection_metrics['accuracy']}%")
+                with col2:
+                    st.metric("Precision", f"{detection_metrics['precision']}%")
+                with col3:
+                    st.metric("Recall", f"{detection_metrics['recall']}%")
+                with col4:
+                    st.metric("F1 Score", f"{detection_metrics['f1']}%")
         else:
-            st.info("No history yet")
+            st.info("No analysis history yet. Upload and analyze some videos first.")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
     elif selected == "Settings":
         st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### SETTINGS")
+        st.markdown("### ⚙️ SETTINGS")
 
         st.markdown(f"**Dataset Path:** `{DATASET_PATH}`")
 
-        st.markdown("#### Retraining")
-        if st.button("🔄 Retrain Model", type="primary"):
-            with st.spinner("Retraining..."):
-                def prog(p, msg):
-                    st.caption(msg)
-
-                success = crime_model.trainer.train_fast_model(DATASET_PATH, prog)
-                if success:
-                    crime_model.model_loaded = True
-                    st.success("Model retrained successfully!")
-                    st.rerun()
-                else:
-                    st.error("Training failed")
+        st.markdown("#### Model Information")
+        if crime_model.model_loaded:
+            training_info = crime_model.get_training_info()
+            if training_info:
+                st.json({
+                    'Model Architecture': training_info.get('model_architecture', 'ResNet18'),
+                    'Number of Classes': training_info.get('num_classes', 0),
+                    'Training Samples': training_info.get('train_samples', 0),
+                    'Validation Samples': training_info.get('val_samples', 0),
+                    'Best Validation Accuracy': f"{training_info.get('best_val_accuracy', 0):.1f}%",
+                    'Training Epochs': training_info.get('num_epochs', 0)
+                })
+        else:
+            st.warning("Model not loaded. Please ensure saved_model.pkl is in the app directory.")
 
         st.markdown("#### Clear Data")
-        if st.button("🗑️ Clear History"):
+        if st.button("🗑️ Clear Analysis History", type="secondary"):
             analyzer.analysis_history.clear()
             analyzer.detection_stats = {'true_positives': 0, 'false_positives': 0, 'true_negatives': 0,
                                         'false_negatives': 0}
             st.success("History cleared!")
+            st.rerun()
 
-        st.markdown("#### Model Info")
+        st.markdown("#### About")
         st.info("""
-        **Optimized Model Features:**
-        - ResNet18 backbone (fast inference)
-        - Frozen early layers (prevents overfitting)
-        - Dropout layers (0.4, 0.3, 0.2) for regularization
-        - Label smoothing (0.1)
-        - Weight decay (0.01)
-        - Early stopping
-        - Single frame extraction (fast)
-        - Majority voting on 5 frames
+        **AI Community Security Analytics System**
+
+        - **Model:** Pre-trained ResNet18
+        - **Purpose:** Real-time crime detection from video
+        - **Features:** 
+          - Single frame extraction for fast processing
+          - Majority voting for accuracy
+          - Email alerts for suspicious activity
+          - Real-time analysis with confidence scoring
+
+        **Note:** This model was pre-trained on your dataset and loaded for inference only.
         """)
 
         st.markdown('</div>', unsafe_allow_html=True)
