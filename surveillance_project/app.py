@@ -39,14 +39,31 @@ os.environ['OPENCV_FFMPEG_LOGLEVEL'] = '-8'
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 # -- CONFIGURATION --
-# Use Streamlit secrets for sensitive data
-if 'GMAIL_PASSWORD' in st.secrets:
-    GMAIL_APP_PASSWORD = st.secrets["GMAIL_PASSWORD"]
-else:
-    GMAIL_APP_PASSWORD = "twmlrauqerkvxark"  # Fallback for local testing
-    st.warning("⚠️ Using default Gmail password. For production, set secrets in Streamlit Cloud.")
+# Use Streamlit secrets for sensitive data (local .streamlit/secrets.toml or cloud secrets)
+try:
+    # Try to get from secrets (works in both local and cloud)
+    if 'GMAIL_PASSWORD' in st.secrets:
+        GMAIL_APP_PASSWORD = st.secrets["GMAIL_PASSWORD"]
+    else:
+        # Fallback for local testing without secrets
+        GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
+        if os.path.exists(".streamlit/secrets.toml"):
+            st.info("📧 Email alerts configured in secrets.toml")
+        else:
+            st.warning("⚠️ Using default email configuration. Email alerts may not work.")
+except Exception:
+    # Ultimate fallback
+    GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
 
-ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
+# Get alert email from secrets or use default
+try:
+    if 'ALERT_EMAIL' in st.secrets:
+        ALERT_EMAIL = st.secrets["ALERT_EMAIL"]
+    else:
+        ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
+except Exception:
+    ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
+
 DATASET_PATH = "./dataset"  # Changed for deployment - create this folder or use temp
 
 # Define all crime categories
@@ -647,6 +664,12 @@ def main():
     with st.sidebar:
         st.markdown("### CONTROL PANEL")
 
+        # Show email configuration status
+        if GMAIL_APP_PASSWORD and ALERT_EMAIL:
+            st.success("📧 Email alerts configured")
+        else:
+            st.warning("⚠️ Email alerts not configured")
+
         selected = st.radio("Menu", ["Live Analysis", "Analytics History", "Settings"])
 
         st.markdown("---")
@@ -819,7 +842,15 @@ def main():
 
         st.markdown(f"**Dataset Path:** `{DATASET_PATH}`")
 
-        st.markdown("#### Model Information")
+        # Email configuration section
+        st.markdown("#### 📧 Email Configuration")
+        st.info(f"**Alert Email:** {ALERT_EMAIL}")
+        if GMAIL_APP_PASSWORD:
+            st.success("✅ Gmail password configured")
+        else:
+            st.error("❌ Gmail password not configured. Email alerts will not work.")
+
+        st.markdown("#### 🤖 Model Information")
         if crime_model.model_loaded:
             training_info = crime_model.get_training_info()
             if training_info:
@@ -834,15 +865,15 @@ def main():
         else:
             st.warning("Model not loaded. Please ensure saved_model.pkl is in the app directory.")
 
-        st.markdown("#### Clear Data")
-        if st.button("🗑️ Clear Analysis History", type="secondary"):
+        st.markdown("#### 🗑️ Clear Data")
+        if st.button("Clear Analysis History", type="secondary"):
             analyzer.analysis_history.clear()
             analyzer.detection_stats = {'true_positives': 0, 'false_positives': 0, 'true_negatives': 0,
                                         'false_negatives': 0}
             st.success("History cleared!")
             st.rerun()
 
-        st.markdown("#### About")
+        st.markdown("#### ℹ️ About")
         st.info("""
         **AI Community Security Analytics System**
 
@@ -855,6 +886,11 @@ def main():
           - Real-time analysis with confidence scoring
 
         **Note:** This model was pre-trained on your dataset and loaded for inference only.
+
+        **For other users:** To configure email alerts, create `.streamlit/secrets.toml` with:
+        ```toml
+        GMAIL_PASSWORD = "your_gmail_app_password"
+        ALERT_EMAIL = "your_email@gmail.com"
         """)
 
         st.markdown('</div>', unsafe_allow_html=True)
