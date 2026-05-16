@@ -1,0 +1,26 @@
+# Streamlit secrets - IMPORTANT: Keep this private!
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Model files (optional - comment out if you want to share)
+# saved_model.pkl
+
+# Local configuration
+*.local
+*.log

@@ -1,0 +1,10 @@
+[theme]
+base = "dark"
+primaryColor = "#00fbff"
+
+[server]
+maxUploadSize = 200
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
