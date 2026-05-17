@@ -1027,7 +1027,7 @@ class AdvancedPVlibEngine:
         times = pd.date_range(
             start=start_time,
             end=start_time + pd.Timedelta(hours=48),
-            freq='1H',
+            freq='1h',
             tz=self.tz
         )
 
