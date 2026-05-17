@@ -6,7 +6,7 @@ import threading
 import time
 import json
 from datetime import datetime
-from collections import deque
+from collections import deque, defaultdict
 import yagmail
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
@@ -15,329 +15,654 @@ import cv2
 import torch
 import torchvision.transforms as transforms
 from torchvision.models import resnet18, ResNet18_Weights
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import warnings
 import tempfile
 from streamlit_option_menu import option_menu
-import base64
 import pandas as pd
 from PIL import Image
-import io
 import pathlib
+import random
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from collections import Counter
 
 warnings.filterwarnings('ignore')
 
-# --- 1. BYPASS DLL CONFLICTS ---
+# Suppress OpenCV warnings
+os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
+os.environ['OPENCV_FFMPEG_LOGLEVEL'] = '-8'
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-# --- 2. CONFIGURATION ---
+# -- CONFIGURATION --
 GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
 ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
-DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\Crime"
+DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\dataset-video-split"
 
-# --- 3. PAGE CONFIG ---
-st.set_page_config(
-    page_title="AI COMMUNITY SECURITY ANALYTICS",
-    page_icon="🚨",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Define all crime categories
+CRIME_CATEGORIES = [
+    'abuse', 'arrest', 'arson', 'assault', 'bulglary', 'clapping',
+    'explosion', 'fighting', 'meet_and_split', 'normal_videos',
+    'roadaccidents', 'robbery', 'shooting', 'shoplifting', 'sitting',
+    'standing_still', 'stealing', 'vandalism', 'walking',
+    'walking_while_reading_book', 'walking_while_using_phone'
+]
+
+# Normal categories (should NOT trigger alerts)
+NORMAL_CATEGORIES = {
+    'normal_videos', 'clapping', 'sitting', 'standing_still',
+    'walking', 'walking_while_reading_book', 'walking_while_using_phone',
+    'meet_and_split'
+}
+
+# Crime categories for alerting
+CRIME_ALERT_CATEGORIES = {
+    'abuse', 'arrest', 'arson', 'assault', 'bulglary', 'explosion',
+    'fighting', 'roadaccidents', 'robbery', 'shooting', 'shoplifting',
+    'stealing', 'vandalism'
+}
+
+CRIME_TYPE_MAP = {
+    'abuse': 'ABUSE', 'arrest': 'ARREST', 'arson': 'ARSON',
+    'assault': 'ASSAULT', 'bulglary': 'BURGLARY', 'clapping': 'NORMAL',
+    'explosion': 'EXPLOSION', 'fighting': 'FIGHTING',
+    'meet_and_split': 'NORMAL', 'normal_videos': 'NORMAL',
+    'roadaccidents': 'ROAD_ACCIDENT', 'robbery': 'ROBBERY',
+    'shooting': 'SHOOTING', 'shoplifting': 'SHOPLIFTING',
+    'sitting': 'NORMAL', 'standing_still': 'NORMAL',
+    'stealing': 'STEALING', 'vandalism': 'VANDALISM',
+    'walking': 'NORMAL', 'walking_while_reading_book': 'NORMAL',
+    'walking_while_using_phone': 'NORMAL'
+}
+
+# -- PAGE CONFIG --
+st.set_page_config(page_title="AI COMMUNITY SECURITY ANALYTICS", page_icon="🚨", layout="wide")
 
 
-# --- 4. CUSTOM CSS FOR BACKGROUND ---
 def set_background():
     st.markdown("""
-        <style>
-        .stApp {
-            background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), 
-                        url('https://images.unsplash.com/photo-1557597774-9d273e5e0b8a?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80');
-            background-size: cover;
-            background-repeat: no-repeat;
-            background-attachment: fixed;
-            background-position: center;
-        }
-
-        /* Main container styling */
-        .main-header {
-            text-align: center;
-            padding: 20px;
-            background: rgba(0, 0, 0, 0.8);
-            border-radius: 15px;
-            margin-bottom: 20px;
-            border: 2px solid #00fbff;
-            box-shadow: 0 0 20px rgba(0, 251, 255, 0.3);
-        }
-
-        .main-header h1 {
-            color: white;
-            text-shadow: 2px 2px 10px #000, 0 0 20px #00fbff;
-            font-size: 3em;
-            margin: 0;
-            animation: glow 2s ease-in-out infinite alternate;
-        }
-
-        @keyframes glow {
-            from { text-shadow: 0 0 10px #00fbff, 0 0 20px #00fbff; }
-            to { text-shadow: 0 0 20px #00fbff, 0 0 30px #00fbff; }
-        }
-
-        /* Card styling */
-        .css-card {
-            background: rgba(0, 0, 0, 0.85);
-            padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
-            border: 1px solid #00fbff;
-            color: white;
-            margin-bottom: 20px;
-            backdrop-filter: blur(5px);
-        }
-
-        /* Metric cards */
-        .metric-card {
-            background: rgba(0, 255, 255, 0.1);
-            padding: 15px;
-            border-radius: 10px;
-            border-left: 4px solid #00fbff;
-            margin: 10px 0;
-            transition: transform 0.3s;
-        }
-
-        .metric-card:hover {
-            transform: translateX(5px);
-            background: rgba(0, 255, 255, 0.2);
-        }
-
-        /* Alert styling */
-        .alert-critical {
-            background: linear-gradient(45deg, #ff4757, #ff6b6b);
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            font-size: 28px;
-            font-weight: bold;
-            animation: pulse 1s infinite;
-            box-shadow: 0 0 30px #ff4757;
-            margin: 10px 0;
-        }
-
-        .alert-warning {
-            background: linear-gradient(45deg, #feca57, #ff9f43);
-            color: black;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            font-size: 24px;
-            font-weight: bold;
-            box-shadow: 0 0 30px #feca57;
-            margin: 10px 0;
-        }
-
-        .alert-secure {
-            background: linear-gradient(45deg, #00ff88, #00d68f);
-            color: black;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            font-size: 24px;
-            font-weight: bold;
-            box-shadow: 0 0 30px #00ff88;
-            margin: 10px 0;
-        }
-
-        @keyframes pulse {
-            0% { transform: scale(1); box-shadow: 0 0 20px #ff4757; }
-            50% { transform: scale(1.02); box-shadow: 0 0 40px #ff4757; }
-            100% { transform: scale(1); box-shadow: 0 0 20px #ff4757; }
-        }
-
-        /* Button styling */
-        .stButton > button {
-            background: rgba(0, 255, 255, 0.2);
-            color: white;
-            border: 2px solid #00fbff;
-            border-radius: 10px;
-            padding: 10px 20px;
-            font-weight: bold;
-            transition: all 0.3s;
-            width: 100%;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .stButton > button:hover {
-            background: #00fbff;
-            color: black;
-            box-shadow: 0 0 20px #00fbff;
-            border-color: #00fbff;
-        }
-
-        /* Selectbox styling */
-        .stSelectbox > div > div {
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            border: 1px solid #00fbff;
-            border-radius: 8px;
-        }
-
-        .stSelectbox > div > div:hover {
-            border-color: #00fbff;
-            box-shadow: 0 0 10px #00fbff;
-        }
-
-        /* Progress bar styling */
-        .stProgress > div > div > div > div {
-            background: linear-gradient(90deg, #00fbff, #00ff88) !important;
-        }
-
-        /* Video container */
-        .video-container {
-            background: rgba(0, 0, 0, 0.9);
-            padding: 15px;
-            border-radius: 15px;
-            border: 2px solid #00fbff;
-            margin: 10px 0;
-            box-shadow: 0 0 20px rgba(0, 251, 255, 0.3);
-        }
-
-        /* Info boxes */
-        .info-box {
-            background: rgba(0, 255, 255, 0.1);
-            border: 1px solid #00fbff;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px 0;
-            color: white;
-        }
-
-        /* Scrollbar styling */
-        ::-webkit-scrollbar {
-            width: 10px;
-            background: rgba(0, 0, 0, 0.8);
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: linear-gradient(#00fbff, #00ff88);
-            border-radius: 5px;
-        }
-
-        /* Radio buttons */
-        .stRadio > div {
-            color: white;
-        }
-
-        .stRadio > div > label {
-            color: white !important;
-        }
-
-        /* Metrics styling */
-        .css-1xarl3l {
-            color: #00fbff !important;
-        }
-
-        /* Warning boxes */
-        .stAlert {
-            background: rgba(255, 71, 87, 0.2) !important;
-            border: 1px solid #ff4757 !important;
-            color: white !important;
-        }
-
-        /* Success boxes */
-        .stSuccess {
-            background: rgba(0, 255, 136, 0.2) !important;
-            border: 1px solid #00ff88 !important;
-            color: white !important;
-        }
-
-        /* Info boxes */
-        .stInfo {
-            background: rgba(0, 251, 255, 0.2) !important;
-            border: 1px solid #00fbff !important;
-            color: white !important;
-        }
-        </style>
+    <style>
+    .stApp { background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('https://images.unsplash.com/photo-1557597774-9d273e5e0b8a?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); background-size: cover; background-repeat: no-repeat; background-attachment: fixed; background-position: center; }
+    .main-header { text-align: center; padding: 20px; background: rgba(0, 0, 0, 0.8); border-radius: 15px; margin-bottom: 20px; border: 2px solid #00fbff; box-shadow: 0 0 20px rgba(0, 251, 255, 0.3); }
+    .main-header h1 { color: white; text-shadow: 2px 2px 10px #000, 0 0 20px #00fbff; font-size: 3em; margin: 0; animation: glow 2s ease-in-out infinite alternate; }
+    @keyframes glow { from { text-shadow: 0 0 10px #00fbff, 0 0 20px #00fbff; } to { text-shadow: 0 0 20px #00fbff, 0 0 30px #00fbff; } }
+    .css-card { background: rgba(0, 0, 0, 0.85); padding: 20px; border-radius: 15px; box-shadow: 0 0 20px rgba(0, 255, 255, 0.3); border: 1px solid #00fbff; color: white; margin-bottom: 20px; backdrop-filter: blur(5px); }
+    .metric-card { background: rgba(0, 255, 255, 0.1); padding: 15px; border-radius: 10px; border-left: 4px solid #00fbff; margin: 10px 0; transition: transform 0.3s; }
+    .metric-card:hover { transform: translateX(5px); background: rgba(0, 255, 255, 0.2); }
+    .alert-critical { background: linear-gradient(45deg, #ff4757, #ff6b6b); color: white; padding: 20px; border-radius: 10px; text-align: center; font-size: 28px; font-weight: bold; animation: pulse 1s infinite; box-shadow: 0 0 30px #ff4757; margin: 10px 0; }
+    .alert-warning { background: linear-gradient(45deg, #feca57, #ff9f43); color: black; padding: 20px; border-radius: 10px; text-align: center; font-size: 24px; font-weight: bold; box-shadow: 0 0 30px #feca57; margin: 10px 0; }
+    .alert-secure { background: linear-gradient(45deg, #00ff88, #00d68f); color: black; padding: 20px; border-radius: 10px; text-align: center; font-size: 24px; font-weight: bold; box-shadow: 0 0 30px #00ff88; margin: 10px 0; }
+    @keyframes pulse { 0% { transform: scale(1); box-shadow: 0 0 20px #ff4757; } 50% { transform: scale(1.02); box-shadow: 0 0 40px #ff4757; } 100% { transform: scale(1); box-shadow: 0 0 20px #ff4757; } }
+    .stButton > button { background: rgba(0, 255, 255, 0.2); color: white; border: 2px solid #00fbff; border-radius: 10px; padding: 10px 20px; font-weight: bold; transition: all 0.3s; width: 100%; text-transform: uppercase; letter-spacing: 1px; }
+    .stButton > button:hover { background: #00fbff; color: black; box-shadow: 0 0 20px #00fbff; border-color: #00fbff; }
+    .info-box { background: rgba(0, 255, 255, 0.1); border: 1px solid #00fbff; border-radius: 10px; padding: 15px; margin: 10px 0; color: white; }
+    .perf-metric { background: rgba(0, 0, 0, 0.6); border-radius: 10px; padding: 10px; text-align: center; border: 1px solid #00fbff; }
+    .perf-value { font-size: 24px; font-weight: bold; color: #00fbff; }
+    .perf-label { font-size: 12px; color: #ccc; margin-top: 5px; }
+    </style>
     """, unsafe_allow_html=True)
 
 
-# --- 5. FIXED VIDEO HANDLING FUNCTIONS ---
+# -- VIDEO HANDLING FUNCTIONS --
 def safe_get_video_files(root_path):
-    """Safely get video files with error handling"""
     video_extensions = ['*.mp4', '*.avi', '*.mkv', '*.mov', '*.wmv', '*.flv', '*.m4v', '*.mpeg']
     all_files = []
-
     if not os.path.exists(root_path):
-        st.warning(f"⚠️ Dataset path does not exist: {root_path}")
         return all_files
-
     try:
         for ext in video_extensions:
             try:
-                # Use pathlib for better path handling
-                pattern = str(pathlib.Path(root_path) / "**" / ext)
+                pattern = str(pathlib.Path(root_path) / ext)
                 found_files = glob.glob(pattern, recursive=True)
                 all_files.extend(found_files)
-            except Exception as e:
-                st.warning(f"Error searching for {ext} files: {e}")
+            except Exception:
                 continue
-    except Exception as e:
-        st.error(f"Error accessing dataset: {e}")
-
+    except Exception:
+        pass
     return all_files
 
 
 def check_video_file(video_path):
-    """Check if video file is accessible and valid"""
     try:
         if not os.path.exists(video_path):
             return False, "File does not exist"
-
-        # Try to open with OpenCV
-        cap = cv2.VideoCapture(video_path)
+        cv2.setRNGSeed(0)
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            return False, "Cannot open video file"
-
-        # Check if we can read frames
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return False, "Cannot open video file"
         ret, frame = cap.read()
         cap.release()
-
-        if not ret:
+        if not ret or frame is None:
             return False, "Cannot read video frames"
-
         return True, "Video is accessible"
     except Exception as e:
         return False, str(e)
 
 
-def get_video_thumbnail(video_path):
-    """Extract a thumbnail from video"""
+def extract_single_frame(video_path):
+    """Extract a single frame from video (fast)"""
     try:
-        cap = cv2.VideoCapture(video_path)
-        ret, frame = cap.read()
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(video_path)
+
+        if not cap.isOpened():
+            return None
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            # Take middle frame
+            frame_pos = total_frames // 2
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                cap.release()
+                return frame
+
         cap.release()
-
-        if ret:
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return frame_rgb
         return None
-    except:
+    except Exception:
         return None
 
 
-# --- 6. ENHANCED MODEL INITIALIZATION WITH CRIME DETECTION ---
+# -- OPTIMIZED DATASET (SINGLE FRAME, FAST) --
+class FastVideoDataset(Dataset):
+    def __init__(self, video_paths, labels, transform=None, is_training=True):
+        self.video_paths = video_paths
+        self.labels = labels
+        self.transform = transform
+        self.is_training = is_training
+
+    def __len__(self):
+        return len(self.video_paths)
+
+    def __getitem__(self, idx):
+        video_path = self.video_paths[idx]
+        label = self.labels[idx]
+
+        # Extract single frame (fast)
+        frame = extract_single_frame(video_path)
+
+        if frame is None:
+            frame = np.zeros((224, 224, 3), dtype=np.uint8)
+
+        if self.transform:
+            frame = self.transform(frame)
+
+        return frame, label
+
+
+# -- OPTIMIZED MODEL WITHOUT BATCHNORM ISSUES --
+class OptimizedCrimeClassifier(nn.Module):
+    def __init__(self, num_classes=21):
+        super(OptimizedCrimeClassifier, self).__init__()
+        # Use ResNet18 (faster, good enough)
+        self.backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
+
+        # Freeze early layers to prevent overfitting and speed up training
+        for param in self.backbone.layer1.parameters():
+            param.requires_grad = False
+        for param in self.backbone.layer2.parameters():
+            param.requires_grad = False
+
+        num_features = self.backbone.fc.in_features
+
+        # Simplified classifier without BatchNorm (to avoid batch size issues)
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.4),  # Increased dropout
+            nn.Linear(num_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+
+    def get_trainable_params_count(self):
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        return trainable, total
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
+# -- OPTIMIZED TRAINER --
+class OptimizedCrimeTrainer:
+    def __init__(self):
+        self.model = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.class_names = CRIME_CATEGORIES
+        self.trained = False
+        self.performance_metrics = {}
+        self.training_info = {}
+        self.inverse_class_mapping = {0: 0}
+        self.effective_class_names = ['normal_videos']
+        self.class_mapping = {}
+        self.training_history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+
+    def map_filename_to_category(self, filename):
+        """Map filename patterns to categories"""
+        name = os.path.splitext(filename)[0].lower()
+
+        # Direct mapping
+        for category in self.class_names:
+            if category in name or name.startswith(category):
+                return category
+
+        # Special mappings
+        special_mappings = {
+            'standingstill': 'standing_still', 'standstill': 'standing_still',
+            'meetandsplit': 'meet_and_split', 'road_accidents': 'roadaccidents',
+            'walkingreadingbook': 'walking_while_reading_book',
+            'walkingusingphone': 'walking_while_using_phone',
+            'burglary': 'bulglary'
+        }
+
+        for key, value in special_mappings.items():
+            if key in name:
+                return value
+
+        return None
+
+    def prepare_dataset_from_folder(self, folder_path):
+        """Prepare dataset from folder"""
+        video_paths = []
+        labels = []
+        class_counts = defaultdict(int)
+
+        if not os.path.exists(folder_path):
+            return video_paths, labels, class_counts
+
+        videos = safe_get_video_files(folder_path)
+
+        for video in videos:
+            filename = os.path.basename(video)
+            category = self.map_filename_to_category(filename)
+
+            if category is not None and category in self.class_names:
+                if check_video_file(video)[0]:
+                    class_idx = self.class_names.index(category)
+                    video_paths.append(video)
+                    labels.append(class_idx)
+                    class_counts[category] += 1
+
+        return video_paths, labels, class_counts
+
+    def get_transforms(self):
+        """Get training and validation transforms"""
+        # Training transforms (light augmentation to avoid overfitting)
+        train_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        # Validation transforms
+        val_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        return train_transform, val_transform
+
+    def train_fast_model(self, dataset_path, progress_callback=None):
+        """Train model with fixes for batch size issues"""
+        try:
+            if progress_callback:
+                progress_callback(0.05, "🔄 Preparing dataset...")
+
+            train_path = os.path.join(dataset_path, 'train')
+
+            if not os.path.exists(train_path):
+                if progress_callback:
+                    progress_callback(1.0, f"❌ Train folder not found")
+                return False
+
+            # Prepare dataset
+            video_paths, labels, class_counts = self.prepare_dataset_from_folder(train_path)
+
+            if len(video_paths) == 0:
+                if progress_callback:
+                    progress_callback(1.0, "⚠️ No valid videos found")
+                return False
+
+            # Get unique classes with enough samples
+            unique_classes = sorted(list(set(labels)))
+            # Filter classes with at least 2 samples
+            valid_classes = []
+            for class_idx in unique_classes:
+                class_name = self.class_names[class_idx]
+                if class_counts[class_name] >= 2:
+                    valid_classes.append(class_idx)
+
+            if len(valid_classes) < 2:
+                if progress_callback:
+                    progress_callback(1.0, "⚠️ Need at least 2 classes with 2+ samples each")
+                return False
+
+            # Filter data to valid classes
+            valid_indices = [i for i, label in enumerate(labels) if label in valid_classes]
+            video_paths = [video_paths[i] for i in valid_indices]
+            labels = [labels[i] for i in valid_indices]
+
+            # Re-map labels
+            class_to_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(valid_classes)}
+            remapped_labels = [class_to_idx[label] for label in labels]
+
+            effective_class_names = [self.class_names[i] for i in valid_classes]
+            effective_num_classes = len(effective_class_names)
+
+            if progress_callback:
+                progress_callback(0.15, f"✅ Found {len(video_paths)} videos across {effective_num_classes} categories")
+                for cat, count in class_counts.items():
+                    if count > 0 and self.class_names.index(cat) in valid_classes:
+                        progress_callback(0.15, f"  - {cat}: {count} videos")
+
+            # Get transforms
+            train_transform, val_transform = self.get_transforms()
+
+            # Create full dataset
+            full_dataset = FastVideoDataset(video_paths, remapped_labels, train_transform, is_training=True)
+
+            # Stratified split
+            from sklearn.model_selection import StratifiedShuffleSplit
+            labels_array = np.array(remapped_labels)
+            sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+            train_idx, val_idx = next(sss.split(video_paths, labels_array))
+
+            # Create datasets
+            train_dataset = torch.utils.data.Subset(full_dataset, train_idx)
+            val_video_paths = [video_paths[i] for i in val_idx]
+            val_labels = [remapped_labels[i] for i in val_idx]
+            val_dataset = FastVideoDataset(val_video_paths, val_labels, val_transform, is_training=False)
+
+            # Use DropLast to avoid batch size 1 issues
+            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0, drop_last=True)
+            val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=0)
+
+            if progress_callback:
+                progress_callback(0.3, f"🧠 Building model on {self.device}...")
+                progress_callback(0.3, f"📊 Train: {len(train_dataset)} | Val: {len(val_dataset)}")
+
+            # Initialize model
+            self.model = OptimizedCrimeClassifier(num_classes=effective_num_classes)
+            self.model = self.model.to(self.device)
+
+            # Count parameters
+            trainable, total = self.model.get_trainable_params_count()
+            if progress_callback:
+                progress_callback(0.3, f"📊 Params: {trainable:,} trainable / {total:,} total")
+
+            # Calculate class weights
+            class_counts_array = np.array([class_counts[self.class_names[c]] for c in valid_classes])
+            class_weights = 1.0 / class_counts_array
+            class_weights = class_weights / class_weights.sum() * effective_num_classes
+            class_weights_tensor = torch.FloatTensor(class_weights).to(self.device)
+
+            # Loss with label smoothing
+            criterion = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
+
+            # Optimizer with weight decay
+            optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=0.01)
+
+            # Scheduler
+            scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+
+            if progress_callback:
+                progress_callback(0.35, f"🎬 Training started...")
+
+            # Training loop
+            num_epochs = 20
+            best_val_acc = 0
+            best_model_state = None
+            patience = 6
+            patience_counter = 0
+            best_epoch = 0
+
+            for epoch in range(num_epochs):
+                # Training
+                self.model.train()
+                train_loss = 0.0
+                train_correct = 0
+                train_total = 0
+
+                for i, (images, labels_batch) in enumerate(train_loader):
+                    images = images.to(self.device)
+                    labels_batch = labels_batch.to(self.device)
+
+                    optimizer.zero_grad()
+                    outputs = self.model(images)
+                    loss = criterion(outputs, labels_batch)
+                    loss.backward()
+
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    optimizer.step()
+
+                    train_loss += loss.item()
+                    _, predicted = torch.max(outputs, 1)
+                    train_total += labels_batch.size(0)
+                    train_correct += (predicted == labels_batch).sum().item()
+
+                    if progress_callback and i % 10 == 0:
+                        progress = 0.35 + (epoch * len(train_loader) + i) / (num_epochs * len(train_loader)) * 0.55
+                        progress_callback(progress,
+                                          f"Epoch {epoch + 1}/{num_epochs} | Loss: {loss.item():.3f} | Acc: {100 * train_correct / train_total:.1f}%")
+
+                train_acc = 100 * train_correct / train_total if train_total > 0 else 0
+                avg_train_loss = train_loss / len(train_loader)
+
+                # Validation
+                if progress_callback:
+                    progress_callback(0.9, f"📈 Validating...")
+
+                self.model.eval()
+                all_preds = []
+                all_labels = []
+                val_correct = 0
+                val_total = 0
+                val_loss = 0.0
+
+                with torch.no_grad():
+                    for images, labels_batch in val_loader:
+                        images = images.to(self.device)
+                        labels_batch = labels_batch.to(self.device)
+                        outputs = self.model(images)
+                        loss = criterion(outputs, labels_batch)
+                        val_loss += loss.item()
+                        _, predicted = torch.max(outputs, 1)
+                        val_total += labels_batch.size(0)
+                        val_correct += (predicted == labels_batch).sum().item()
+                        all_preds.extend(predicted.cpu().numpy())
+                        all_labels.extend(labels_batch.cpu().numpy())
+
+                val_acc = 100 * val_correct / val_total if val_total > 0 else 0
+                avg_val_loss = val_loss / len(val_loader)
+
+                # Update scheduler
+                scheduler.step(val_acc)
+
+                # Store history
+                self.training_history['train_loss'].append(avg_train_loss)
+                self.training_history['val_loss'].append(avg_val_loss)
+                self.training_history['train_acc'].append(train_acc)
+                self.training_history['val_acc'].append(val_acc)
+
+                # Check for best model
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    best_model_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                    patience_counter = 0
+                    best_epoch = epoch + 1
+                    if progress_callback:
+                        progress_callback(0.9, f"✨ New best! Val Acc: {val_acc:.1f}%")
+                else:
+                    patience_counter += 1
+
+                # Get current learning rate
+                current_lr = optimizer.param_groups[0]['lr']
+
+                if progress_callback:
+                    progress_callback(0.9,
+                                      f"📊 E{epoch + 1}: Train={train_acc:.1f}% | Val={val_acc:.1f}% | LR={current_lr:.6f}")
+
+                # Early stopping
+                if patience_counter >= patience:
+                    if progress_callback:
+                        progress_callback(0.9, f"⏹️ Early stopping at epoch {epoch + 1} (best was epoch {best_epoch})")
+                    break
+
+            # Load best model
+            if best_model_state is not None:
+                self.model.load_state_dict(best_model_state)
+
+            # Final evaluation
+            if progress_callback:
+                progress_callback(0.95, "📊 Computing final metrics...")
+
+            # Calculate metrics
+            if len(all_preds) > 0:
+                self.performance_metrics = {
+                    'accuracy': float(accuracy_score(all_labels, all_preds) * 100),
+                    'precision': float(
+                        precision_score(all_labels, all_preds, average='weighted', zero_division=0) * 100),
+                    'recall': float(recall_score(all_labels, all_preds, average='weighted', zero_division=0) * 100),
+                    'f1_score': float(f1_score(all_labels, all_preds, average='weighted', zero_division=0) * 100)
+                }
+
+                # Per-class accuracy
+                cm = confusion_matrix(all_labels, all_preds)
+                per_class_acc = {}
+                for i, class_name in enumerate(effective_class_names):
+                    if i < len(cm):
+                        tp = cm[i, i]
+                        total_class = cm[i, :].sum()
+                        per_class_acc[class_name] = float(tp / total_class * 100) if total_class > 0 else 0
+                self.performance_metrics['per_class_accuracy'] = per_class_acc
+
+            # Calculate final train accuracy (for info)
+            final_train_acc = self.training_history['train_acc'][-1] if self.training_history['train_acc'] else 0
+
+            self.training_info = {
+                'class_counts': {k: v for k, v in class_counts.items() if self.class_names.index(k) in valid_classes},
+                'effective_classes': effective_class_names,
+                'num_classes': effective_num_classes,
+                'train_samples': len(train_dataset),
+                'val_samples': len(val_dataset),
+                'num_epochs': epoch + 1,
+                'best_val_accuracy': best_val_acc,
+                'best_epoch': best_epoch,
+                'trainable_params': trainable,
+                'total_params': total,
+                'learning_rate': 0.0005,
+                'model_architecture': 'ResNet18 (Optimized)',
+                'total_videos': len(video_paths),
+                'final_train_acc': final_train_acc,
+                'final_val_acc': best_val_acc
+            }
+
+            self.class_mapping = class_to_idx
+            self.inverse_class_mapping = {v: k for k, v in class_to_idx.items()}
+            self.effective_class_names = effective_class_names
+            self.trained = True
+
+            if progress_callback:
+                gap = final_train_acc - best_val_acc
+                progress_callback(1.0, f"✅ Training complete! Validation Accuracy: {best_val_acc:.1f}%")
+                progress_callback(1.0, f"📊 Training-Validation Gap: {gap:.1f}%")
+
+            return True
+
+        except Exception as e:
+            print(f"Training error: {e}")
+            import traceback
+            traceback.print_exc()
+            if progress_callback:
+                progress_callback(1.0, f"❌ Error: {str(e)[:100]}")
+            return False
+
+    def predict_frame(self, frame_tensor):
+        """Predict class for a frame tensor"""
+        if not self.trained or self.model is None:
+            return 0, 0.0
+
+        try:
+            self.model.eval()
+            with torch.no_grad():
+                if frame_tensor.dim() == 3:
+                    frame_tensor = frame_tensor.unsqueeze(0)
+                frame_tensor = frame_tensor.to(self.device)
+
+                outputs = self.model(frame_tensor)
+                probabilities = torch.softmax(outputs, dim=1)
+                predicted = torch.argmax(outputs, dim=1)
+                confidence = probabilities[0][predicted[0]].item()
+
+                if hasattr(self, 'inverse_class_mapping') and self.inverse_class_mapping:
+                    original_class = self.inverse_class_mapping.get(predicted[0].item(), 0)
+                else:
+                    original_class = predicted[0].item()
+
+                return original_class, confidence
+        except Exception as e:
+            print(f"Prediction error: {e}")
+            return 0, 0.0
+
+
+# -- CRIME DETECTION MODEL --
 class CrimeDetectionModel:
     def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        try:
-            self.model = resnet18(weights=ResNet18_Weights.DEFAULT)
-            self.model.eval()
-            self.model = self.model.to(self.device)
-            self.model_loaded = True
-        except Exception as e:
-            st.error(f"Error loading model: {e}")
-            self.model_loaded = False
+        self.trainer = OptimizedCrimeTrainer()
+        self.model_loaded = False
+        self.training_status = "Not Trained"
+        self.frame_buffer = deque(maxlen=5)
 
-        # Enhanced preprocessing for better crime detection
+        # Check dataset and train
+        try:
+            train_path = os.path.join(DATASET_PATH, "train")
+            if os.path.exists(train_path):
+                videos = safe_get_video_files(train_path)
+                if len(videos) > 0:
+                    with st.spinner(f"🎯 Training on {len(videos)} videos..."):
+                        progress_bar = st.progress(0)
+
+                        def update_progress(progress, message):
+                            progress_bar.progress(progress)
+                            if progress < 1.0:
+                                st.caption(message)
+
+                        success = self.trainer.train_fast_model(DATASET_PATH, update_progress)
+                        if success:
+                            self.model_loaded = True
+                            self.training_status = "Model Trained"
+                            st.success(f"✅ Training complete!")
+                        else:
+                            self.model_loaded = False
+                            self.training_status = "Training Failed"
+                        progress_bar.empty()
+                else:
+                    st.info("📁 'train' folder found but no videos inside.")
+            else:
+                st.info("📁 Please create the 'train' folder with videos.")
+        except Exception as e:
+            st.warning(f"Model init: {e}")
+            self.model_loaded = False
+            self.training_status = "Error"
+
         self.preprocess = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((224, 224)),
@@ -345,342 +670,232 @@ class CrimeDetectionModel:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-        print(f"🔥 Crime Detection Model initialized on {self.device}")
+    def get_performance_metrics(self):
+        if self.trainer.trained and self.trainer.performance_metrics:
+            return self.trainer.performance_metrics
+        return {'accuracy': 0, 'precision': 0, 'recall': 0, 'f1_score': 0}
+
+    def get_training_info(self):
+        return self.trainer.training_info
+
+    def get_training_history(self):
+        return self.trainer.training_history
+
+    def add_frame_to_buffer(self, frame):
+        processed = self.preprocess(frame)
+        self.frame_buffer.append(processed)
+        return len(self.frame_buffer)
+
+    def predict_from_buffer(self):
+        """Predict using majority vote"""
+        if len(self.frame_buffer) == 0:
+            return 0, 0.0
+
+        predictions = []
+        confidences = []
+
+        for frame in list(self.frame_buffer):
+            pred_class, confidence = self.trainer.predict_frame(frame.unsqueeze(0))
+            predictions.append(pred_class)
+            confidences.append(confidence)
+
+        # Majority vote
+        counter = Counter(predictions)
+        most_common = counter.most_common(1)[0][0]
+
+        # Average confidence for majority class
+        avg_confidence = np.mean([confidences[i] for i, p in enumerate(predictions) if p == most_common])
+
+        return most_common, avg_confidence
 
 
-# --- 7. ADVANCED VIDEO ANALYZER WITH SPECIFIC CRIME DETECTION ---
+# -- SIMPLIFIED ANALYZER --
 class AdvancedCrimeAnalyzer:
     def __init__(self, model):
         self.model = model
-        self.device = model.device if hasattr(model, 'device') else 'cpu'
         self.analysis_history = deque(maxlen=100)
-        self.crime_threshold = 0.5
+        self.detection_stats = {
+            'true_positives': 0, 'false_positives': 0, 'true_negatives': 0, 'false_negatives': 0
+        }
 
-    def detect_robbery_indicators(self, prev_frame, curr_frame):
-        """Detect indicators of robbery/theft (sudden movements, grabbing motions)"""
-        if prev_frame is None or curr_frame is None:
-            return {'robbery_score': 0, 'theft_score': 0}
+    def update_performance_stats(self, predicted_crime, actual_crime):
+        if actual_crime is not None:
+            if predicted_crime and actual_crime:
+                self.detection_stats['true_positives'] += 1
+            elif predicted_crime and not actual_crime:
+                self.detection_stats['false_positives'] += 1
+            elif not predicted_crime and not actual_crime:
+                self.detection_stats['true_negatives'] += 1
+            elif not predicted_crime and actual_crime:
+                self.detection_stats['false_negatives'] += 1
 
-        try:
-            # Convert to grayscale
-            prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-            curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+    def get_detection_metrics(self):
+        tp = self.detection_stats['true_positives']
+        fp = self.detection_stats['false_positives']
+        tn = self.detection_stats['true_negatives']
+        fn = self.detection_stats['false_negatives']
+        total = tp + fp + tn + fn
+        if total == 0:
+            return {'accuracy': 0, 'precision': 0, 'recall': 0, 'f1': 0, 'samples': 0}
+        accuracy = (tp + tn) / total * 100
+        precision = tp / (tp + fp) * 100 if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) * 100 if (tp + fn) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        return {'accuracy': round(accuracy, 2), 'precision': round(precision, 2),
+                'recall': round(recall, 2), 'f1': round(f1, 2), 'samples': total}
 
-            # Calculate optical flow
-            flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None,
-                                                0.5, 3, 15, 3, 5, 1.2, 0)
-
-            # Calculate magnitude and direction
-            magnitude = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)
-
-            # Detect sudden, jerky movements (typical in robbery)
-            magnitude_mean = np.mean(magnitude) if magnitude.size > 0 else 0
-            magnitude_std = np.std(magnitude) if magnitude.size > 0 else 0
-
-            # Sudden movement detection (robbery indicator)
-            sudden_movement = magnitude_std / (magnitude_mean + 1e-6)
-            robbery_score = min(sudden_movement * 50, 100)
-
-            # Theft indicator (quick reaching motions)
-            # Detect high-velocity regions (fast hand movements)
-            high_velocity_ratio = np.sum(magnitude > magnitude_mean * 2) / (magnitude.size + 1e-6)
-            theft_score = min(high_velocity_ratio * 80, 100)
-
-            return {
-                'robbery_score': float(robbery_score),
-                'theft_score': float(theft_score)
-            }
-        except Exception as e:
-            return {'robbery_score': 0, 'theft_score': 0}
-
-    def detect_assault_indicators(self, prev_frame, curr_frame):
-        """Detect indicators of assault (aggressive movements, fighting)"""
-        if prev_frame is None or curr_frame is None:
-            return {'assault_score': 0, 'fighting_score': 0}
-
-        try:
-            # Convert to grayscale
-            prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-            curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-
-            # Calculate optical flow
-            flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None,
-                                                0.5, 3, 15, 3, 5, 1.2, 0)
-
-            # Calculate magnitude
-            magnitude = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)
-
-            # Calculate directional changes (chaotic movement typical in fights)
-            direction = np.arctan2(flow[..., 1], flow[..., 0])
-
-            # Directional variance (more chaos = higher assault probability)
-            direction_variance = np.var(direction) if direction.size > 0 else 0
-
-            # Assault indicators
-            magnitude_mean = np.mean(magnitude) if magnitude.size > 0 else 0
-            magnitude_std = np.std(magnitude) if magnitude.size > 0 else 0
-
-            # Fighting detection (combination of high motion and directional chaos)
-            assault_score = min((magnitude_mean * 3) + (direction_variance * 0.5), 100)
-            fighting_score = min((magnitude_std * 5) + (magnitude_mean * 2), 100)
-
-            return {
-                'assault_score': float(assault_score),
-                'fighting_score': float(fighting_score)
-            }
-        except Exception as e:
-            return {'assault_score': 0, 'fighting_score': 0}
-
-    def detect_visual_crime_patterns(self, frame):
-        """Detect visual patterns associated with crimes"""
-        try:
-            if not self.model.model_loaded:
-                return {'suspicious_pattern': np.random.randint(10, 30)}
-
-            # Extract deep features
-            input_tensor = self.model.preprocess(frame).unsqueeze(0).to(self.device)
-
-            with torch.no_grad():
-                features = self.model.model(input_tensor)
-                feature_np = features.cpu().numpy().flatten()
-
-            # Analyze feature patterns for crime indicators
-            feature_mean = np.mean(feature_np) if feature_np.size > 0 else 0
-            feature_std = np.std(feature_np) if feature_np.size > 0 else 0
-
-            # Suspicious pattern score (unusual feature combinations)
-            suspicious_pattern = min(abs(feature_mean - 0.5) * 100 + feature_std * 50, 100)
-
-            return {'suspicious_pattern': float(suspicious_pattern)}
-        except Exception as e:
-            return {'suspicious_pattern': float(np.random.randint(10, 30))}
-
-    def detect_weapons(self, frame):
-        """Detect potential weapons in frame"""
-        try:
-            # Convert to HSV for color-based detection
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-            # Detect metallic colors (simplified)
-            lower_metal = np.array([0, 0, 200])
-            upper_metal = np.array([180, 50, 255])
-            metal_mask = cv2.inRange(hsv, lower_metal, upper_metal)
-
-            # Detect sharp edges
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 50, 150)
-
-            # Calculate probabilities safely
-            metal_ratio = np.sum(metal_mask > 0) / (metal_mask.size + 1e-6)
-            edge_density = np.sum(edges > 0) / (edges.size + 1e-6)
-
-            weapon_probability = min((metal_ratio * 60 + edge_density * 40), 100)
-
-            return float(weapon_probability)
-        except:
-            return float(np.random.randint(5, 15))
-
-    def analyze_video_crime(self, video_path, progress_bar=None):
-        """Comprehensive crime analysis with specific crime type detection"""
-        # Check if video is accessible
+    def analyze_video_crime(self, video_path, progress_bar=None, actual_label=None):
         is_valid, message = check_video_file(video_path)
         if not is_valid:
             return {}, f"Video error: {message}"
 
-        cap = cv2.VideoCapture(video_path)
+        is_normal_video = any(normal in video_path.lower() for normal in NORMAL_CATEGORIES)
 
-        # Get video properties
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(video_path)
+
+        if not cap.isOpened():
+            return {}, "Cannot open video"
+
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         duration = total_frames / fps if fps > 0 else 0
 
-        # Initialize crime-specific metrics
-        robbery_scores = []
-        theft_scores = []
-        assault_scores = []
-        fighting_scores = []
-        suspicious_scores = []
-        weapon_scores = []
-
-        prev_frame = None
         frame_count = 0
-        crime_events = []
+        crime_events = []  # This should be a list of dictionaries
+        model_predictions = []
+        prediction_confidences = []
 
-        # Adaptive sampling
-        sample_rate = max(1,
-                          int(total_frames / 60)) if total_frames > 60 else 1  # Increased sampling for better accuracy
+        # Sample rate based on video length
+        sample_rate = max(1, total_frames // 60)  # Max 60 frames per video
+
+        # Clear buffer
+        self.model.frame_buffer.clear()
+
+        consecutive_crime = 0
+        event_list = []  # Store detailed events
 
         for frame_idx in range(0, total_frames, sample_rate):
             try:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
-                if not ret:
-                    break
+                if not ret or frame is None:
+                    continue
 
                 frame_count += 1
-
-                # Update progress
                 if progress_bar and total_frames > 0:
                     progress_bar.progress(min(frame_idx / total_frames, 1.0))
 
-                # 1. Robbery/Theft detection
-                robbery_metrics = self.detect_robbery_indicators(prev_frame, frame)
-                robbery_scores.append(robbery_metrics['robbery_score'])
-                theft_scores.append(robbery_metrics['theft_score'])
+                # Model prediction
+                self.model.add_frame_to_buffer(frame)
+                pred_class, confidence = self.model.predict_from_buffer()
 
-                # 2. Assault/Fighting detection
-                assault_metrics = self.detect_assault_indicators(prev_frame, frame)
-                assault_scores.append(assault_metrics['assault_score'])
-                fighting_scores.append(assault_metrics['fighting_score'])
+                if pred_class is not None:
+                    model_predictions.append(pred_class)
+                    prediction_confidences.append(confidence)
 
-                # 3. Suspicious pattern detection
-                pattern_metrics = self.detect_visual_crime_patterns(frame)
-                suspicious_scores.append(pattern_metrics['suspicious_pattern'])
+                    pred_category = CRIME_CATEGORIES[pred_class] if pred_class < len(CRIME_CATEGORIES) else 'unknown'
+                    is_crime_pred = pred_category in CRIME_ALERT_CATEGORIES
 
-                # 4. Weapon detection
-                weapon_score = self.detect_weapons(frame)
-                weapon_scores.append(weapon_score)
+                    if is_crime_pred:
+                        consecutive_crime += 1
+                    else:
+                        consecutive_crime = max(0, consecutive_crime - 1)
 
-                # Detect specific crime events with better classification
-                if frame_count > 0:
-                    # Calculate rolling averages for more stable classification
-                    recent_robbery = np.mean(robbery_scores[-10:]) if len(robbery_scores) >= 10 else robbery_metrics[
-                        'robbery_score']
-                    recent_theft = np.mean(theft_scores[-10:]) if len(theft_scores) >= 10 else robbery_metrics[
-                        'theft_score']
-                    recent_assault = np.mean(assault_scores[-10:]) if len(assault_scores) >= 10 else assault_metrics[
-                        'assault_score']
-                    recent_fighting = np.mean(fighting_scores[-10:]) if len(fighting_scores) >= 10 else assault_metrics[
-                        'fighting_score']
-                    recent_weapon = np.mean(weapon_scores[-10:]) if len(weapon_scores) >= 10 else weapon_score
+                    # Trigger on sustained detection
+                    if consecutive_crime >= 3:
+                        crime_score = min(50 + confidence * 50, 100)
+                        event_data = {
+                            'time': round(frame_idx / fps, 1),
+                            'score': round(crime_score, 1),
+                            'type': CRIME_TYPE_MAP.get(pred_category, 'SUSPICIOUS'),
+                            'category': pred_category,
+                            'confidence': round(confidence * 100, 1)
+                        }
+                        event_list.append(event_data)
+                        crime_events.append(event_data)  # Keep as list of dicts
 
-                    # ROBBERY: Characterized by high theft scores + sudden movements + possible weapon
-                    robbery_prob = recent_robbery * 0.3 + recent_theft * 0.4 + recent_weapon * 0.3
-
-                    # ASSAULT: Characterized by high fighting scores + directional chaos + aggression
-                    assault_prob = recent_assault * 0.4 + recent_fighting * 0.4 + recent_weapon * 0.2
-
-                    # THEFT: Quick grabbing motions without the violent aspects of robbery
-                    theft_prob = recent_theft * 0.7 + recent_robbery * 0.2 + suspicious_scores[
-                        -1] * 0.1 if suspicious_scores else 0
-
-                    # Classification logic with distinct thresholds
-                    if assault_prob > 60 and assault_prob > robbery_prob and assault_prob > theft_prob:
-                        crime_events.append({
-                            'frame': frame_idx,
-                            'time': frame_idx / fps if fps > 0 else 0,
-                            'score': assault_prob,
-                            'type': 'ASSAULT/FIGHT',
-                            'confidence': 'HIGH' if assault_prob > 75 else 'MEDIUM'
-                        })
-                    elif robbery_prob > 55 and robbery_prob > assault_prob and robbery_prob > theft_prob:
-                        crime_events.append({
-                            'frame': frame_idx,
-                            'time': frame_idx / fps if fps > 0 else 0,
-                            'score': robbery_prob,
-                            'type': 'ROBBERY',
-                            'confidence': 'HIGH' if robbery_prob > 70 else 'MEDIUM'
-                        })
-                    elif theft_prob > 50 and theft_prob > robbery_prob and theft_prob > assault_prob:
-                        crime_events.append({
-                            'frame': frame_idx,
-                            'time': frame_idx / fps if fps > 0 else 0,
-                            'score': theft_prob,
-                            'type': 'THEFT',
-                            'confidence': 'HIGH' if theft_prob > 65 else 'MEDIUM'
-                        })
-                    elif recent_weapon > 60:
-                        crime_events.append({
-                            'frame': frame_idx,
-                            'time': frame_idx / fps if fps > 0 else 0,
-                            'score': recent_weapon,
-                            'type': 'WEAPON DETECTED',
-                            'confidence': 'HIGH' if recent_weapon > 75 else 'MEDIUM'
-                        })
-
-                prev_frame = frame.copy()
+                        # Reset counter after alert to avoid spam
+                        consecutive_crime = 0
 
             except Exception as e:
-                st.warning(f"Error processing frame {frame_idx}: {e}")
                 continue
 
         cap.release()
 
-        # Calculate comprehensive crime scores
-        if frame_count > 0:
-            # Core crime metrics
-            avg_robbery = np.mean(robbery_scores) if robbery_scores else 0
-            avg_theft = np.mean(theft_scores) if theft_scores else 0
-            avg_assault = np.mean(assault_scores) if assault_scores else 0
-            avg_fighting = np.mean(fighting_scores) if fighting_scores else 0
-            avg_suspicious = np.mean(suspicious_scores) if suspicious_scores else 0
-            avg_weapon = np.mean(weapon_scores) if weapon_scores else 0
+        # Calculate metrics
+        metrics = self.calculate_metrics(
+            event_list, model_predictions, prediction_confidences,
+            frame_count, duration, is_normal_video
+        )
 
-            # Peak crime scores
-            peak_robbery = np.max(robbery_scores) if robbery_scores else 0
-            peak_assault = np.max(assault_scores) if assault_scores else 0
-            peak_theft = np.max(theft_scores) if theft_scores else 0
+        # Store events separately in metrics
+        metrics['crime_events_list'] = event_list
 
-            # Crime persistence
-            high_crime_frames = sum(1 for r, a, t in zip(robbery_scores, assault_scores, theft_scores)
-                                    if r > 50 or a > 50 or t > 50)
-            crime_persistence = (high_crime_frames / frame_count * 100) if frame_count > 0 else 0
+        if actual_label is not None:
+            predicted_crime = len(event_list) > 0 or metrics.get('overall_crime_score', 0) > 35
+            self.update_performance_stats(predicted_crime, actual_label)
 
-            # Count events by type
-            robbery_events = sum(1 for e in crime_events if e['type'] == 'ROBBERY')
-            assault_events = sum(1 for e in crime_events if e['type'] == 'ASSAULT/FIGHT')
-            theft_events = sum(1 for e in crime_events if e['type'] == 'THEFT')
-            weapon_events = sum(1 for e in crime_events if e['type'] == 'WEAPON DETECTED')
+        self.analysis_history.append({
+            'timestamp': datetime.now(),
+            'video': os.path.basename(video_path),
+            'metrics': metrics,
+            'crime_events': event_list
+        })
 
-            # Final crime scores by type (using weighted combinations)
-            final_robbery_score = (avg_robbery * 0.3 + peak_robbery * 0.4 + avg_weapon * 0.3)
-            final_assault_score = (avg_assault * 0.3 + peak_assault * 0.4 + avg_fighting * 0.3)
-            final_theft_score = (avg_theft * 0.5 + peak_theft * 0.3 + avg_suspicious * 0.2)
+        return metrics, "Analysis complete"
 
-            # Overall crime score (weighted combination)
-            overall_crime_score = max(
-                final_robbery_score,
-                final_assault_score,
-                final_theft_score,
-                avg_weapon * 0.8
-            )
+    def calculate_metrics(self, crime_events, predictions, confidences, frame_count, duration, is_normal_video):
+        """Calculate final metrics"""
 
-            metrics = {
-                'overall_crime_score': float(round(overall_crime_score, 2)),
-                'robbery_score': float(round(final_robbery_score, 2)),
-                'theft_score': float(round(final_theft_score, 2)),
-                'assault_score': float(round(final_assault_score, 2)),
-                'fighting_score': float(round(avg_fighting, 2)),
-                'suspicious_activity': float(round(avg_suspicious, 2)),
-                'weapon_detection': float(round(avg_weapon, 2)),
-                'peak_robbery': float(round(peak_robbery, 2)),
-                'peak_assault': float(round(peak_assault, 2)),
-                'peak_theft': float(round(peak_theft, 2)),
-                'crime_persistence': float(round(crime_persistence, 2)),
-                'frames_analyzed': frame_count,
-                'total_frames': total_frames,
-                'duration': float(round(duration, 2)),
-                'crime_events': len(crime_events),
-                'robbery_events': robbery_events,
-                'assault_events': assault_events,
-                'theft_events': theft_events,
-                'weapon_events': weapon_events
-            }
+        # Base score on events
+        if crime_events:
+            avg_score = np.mean([e['score'] for e in crime_events])
+            crime_score = min(avg_score, 100)
+        else:
+            crime_score = 0
 
-            # Store in history
-            self.analysis_history.append({
-                'timestamp': datetime.now(),
-                'video': os.path.basename(video_path),
-                'metrics': metrics,
-                'crime_events': crime_events[:10]
-            })
+        # Adjust based on model predictions
+        if predictions and len(predictions) > 0:
+            crime_ratio = sum(1 for p in predictions
+                              if p < len(CRIME_CATEGORIES) and
+                              CRIME_CATEGORIES[p] in CRIME_ALERT_CATEGORIES) / len(predictions)
 
-            return metrics, "Analysis complete"
+            if crime_ratio > 0.2:
+                crime_score = min(crime_score + crime_ratio * 30, 100)
 
-        return {}, "No frames analyzed"
+        # Lower scores for normal videos
+        if is_normal_video:
+            crime_score = min(crime_score, 25)
+
+        crime_score = np.clip(crime_score, 0, 100)
+
+        # Count event types
+        event_counts = defaultdict(int)
+        for event in crime_events:
+            event_counts[event['type']] += 1
+
+        avg_confidence = np.mean(confidences) if confidences else 0
+
+        return {
+            'overall_crime_score': float(round(crime_score, 1)),
+            'robbery_score': float(round(min(event_counts.get('ROBBERY', 0) * 15, 100), 1)),
+            'theft_score': float(round(min(event_counts.get('THEFT', 0) * 12, 100), 1)),
+            'assault_score': float(round(min(event_counts.get('ASSAULT', 0) * 15, 100), 1)),
+            'weapon_detection': float(round(min(event_counts.get('WEAPON DETECTED', 0) * 20, 100), 1)),
+            'fighting_score': float(round(min(event_counts.get('FIGHTING', 0) * 12, 100), 1)),
+            'frames_analyzed': frame_count,
+            'duration': float(round(duration, 2)),
+            'crime_events': len(crime_events),
+            'model_confidence': float(round(avg_confidence * 100, 1)),
+            'is_normal_video': is_normal_video,
+            'model_trained': self.model.trainer.trained,
+            'model_architecture': 'ResNet18 (Optimized)'
+        }
 
 
-# --- 8. VIDEO SCANNER WITH CACHE ---
+# -- VIDEO SCANNER --
 class VideoScanner:
     def __init__(self):
         self.cache = {}
@@ -689,34 +904,28 @@ class VideoScanner:
 
     def get_all_videos(self, root_path, force_refresh=False):
         current_time = time.time()
-
         if not force_refresh and current_time - self.last_scan < self.scan_interval:
             if root_path in self.cache:
                 return self.cache[root_path]
-
         all_files = safe_get_video_files(root_path)
         self.cache[root_path] = all_files
         self.last_scan = current_time
         return all_files
 
-    def get_folder_stats(self, root_path):
-        videos = self.get_all_videos(root_path)
-        folder_stats = {}
-
-        for video in videos:
-            try:
-                folder = os.path.basename(os.path.dirname(video))
-                if folder not in folder_stats:
-                    folder_stats[folder] = {'count': 0, 'videos': []}
-                folder_stats[folder]['count'] += 1
-                folder_stats[folder]['videos'].append(video)
-            except:
-                continue
-
-        return folder_stats
+    def get_split_stats(self, root_path):
+        splits = ['train', 'test', 'valid']
+        split_stats = {}
+        for split in splits:
+            split_path = os.path.join(root_path, split)
+            if os.path.exists(split_path):
+                videos = self.get_all_videos(split_path)
+                split_stats[split] = len(videos)
+            else:
+                split_stats[split] = 0
+        return split_stats
 
 
-# --- 9. INITIALIZE COMPONENTS ---
+# -- INITIALIZE COMPONENTS --
 @st.cache_resource
 def init_components():
     crime_model = CrimeDetectionModel()
@@ -728,7 +937,7 @@ def init_components():
 crime_model, analyzer, scanner = init_components()
 
 
-# --- 10. HELPER FUNCTIONS ---
+# -- HELPER FUNCTIONS --
 def get_crime_level(score):
     if score > 70:
         return "CRITICAL", "#ff4757"
@@ -738,642 +947,354 @@ def get_crime_level(score):
         return "NORMAL", "#00ff88"
 
 
-def get_crime_type(metrics):
-    """Improved crime type classification"""
-    robbery = metrics.get('robbery_score', 0)
-    assault = metrics.get('assault_score', 0)
-    theft = metrics.get('theft_score', 0)
-    weapon = metrics.get('weapon_detection', 0)
-
-    # Find the highest score to determine crime type
-    scores = {
-        'ROBBERY': robbery,
-        'ASSAULT': assault,
-        'THEFT': theft,
-        'WEAPON': weapon
-    }
-
-    max_type = max(scores, key=scores.get)
-    max_score = scores[max_type]
-
-    if max_score > 40:
-        return max_type
-    elif max(scores.values()) > 30:
-        return "SUSPICIOUS"
-    else:
-        return "NORMAL"
-
-
 def send_crime_alert(video_filename, metrics, crime_type, crime_level):
-    """Send automated email alert when crime is detected"""
     try:
-        yag = yagmail.SMTP(ALERT_EMAIL, GMAIL_APP_PASSWORD)
-
-        alert_subject = f"🚨 {crime_type} ALERT: {metrics['overall_crime_score']:.1f}% Crime Score"
+        yag = yagmail.SMTP(user=ALERT_EMAIL, password=GMAIL_APP_PASSWORD,
+                           host='smtp.gmail.com', port=587,
+                           smtp_starttls=True, smtp_ssl=False)
+        alert_subject = f"🚨 {crime_type} ALERT: {metrics['overall_crime_score']:.1f}%"
         alert_body = f"""
-        ⚠️ CRIME DETECTED - IMMEDIATE ATTENTION REQUIRED ⚠️
+⚠️ CRIME DETECTED ⚠️
 
-        Video: {video_filename}
-        Crime Type: {crime_type}
-        Overall Crime Score: {metrics['overall_crime_score']:.1f}%
-        Threat Level: {crime_level}
+Video: {video_filename}
+Crime Type: {crime_type}
+Score: {metrics['overall_crime_score']:.1f}%
+Level: {crime_level}
 
-        Detailed Crime Metrics:
-        - Robbery Risk: {metrics.get('robbery_score', 0)}%
-        - Assault Risk: {metrics.get('assault_score', 0)}%
-        - Theft Indicators: {metrics.get('theft_score', 0)}%
-        - Weapon Detection: {metrics.get('weapon_detection', 0)}%
-        - Suspicious Activity: {metrics.get('suspicious_activity', 0)}%
+Events: {metrics.get('crime_events', 0)}
+Duration: {metrics.get('duration', 0)}s
 
-        Events Detected:
-        - Total Events: {metrics.get('crime_events', 0)}
-        - Robbery Events: {metrics.get('robbery_events', 0)}
-        - Assault Events: {metrics.get('assault_events', 0)}
-        - Theft Events: {metrics.get('theft_events', 0)}
-        - Weapon Events: {metrics.get('weapon_events', 0)}
-
-        Crime Persistence: {metrics.get('crime_persistence', 0)}%
-        Frames Analyzed: {metrics.get('frames_analyzed', 0)}
-        Video Duration: {metrics.get('duration', 0)}s
-
-        Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-        IMMEDIATE ACTION REQUIRED!
-        """
-
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
         yag.send(to=ALERT_EMAIL, subject=alert_subject, contents=alert_body)
+        yag.close()
         return True
     except Exception as e:
-        st.error(f"Failed to send email: {e}")
         return False
 
 
 def create_folder_structure():
     try:
-        categories = ['theft', 'vandalism', 'assault', 'suspicious', 'normal', 'weapons', 'fire']
-        for category in categories:
-            category_path = os.path.join(DATASET_PATH, category)
-            os.makedirs(category_path, exist_ok=True)
+        os.makedirs(DATASET_PATH, exist_ok=True)
+        for split in ['train', 'test', 'valid']:
+            os.makedirs(os.path.join(DATASET_PATH, split), exist_ok=True)
     except:
-        pass  # Silently fail if can't create folders
+        pass
 
 
-# Create folders
 create_folder_structure()
 
 
-# --- 11. MAIN STREAMLIT APP ---
+def run_automatic_analysis(video_path, video_filename, email_alerts, threshold):
+    is_normal = any(normal in video_path.lower() for normal in NORMAL_CATEGORIES)
+    actual_label = not is_normal
+
+    with st.spinner(f"🔍 Analyzing {video_filename}..."):
+        progress_bar = st.progress(0)
+        metrics, message = analyzer.analyze_video_crime(video_path, progress_bar, actual_label)
+        progress_bar.progress(1.0)
+
+        st.session_state['last_analysis'] = {
+            'metrics': metrics,
+            'filename': video_filename,
+            'time': datetime.now()
+        }
+        st.session_state['analysis_complete'] = True
+
+        crime_score = metrics.get('overall_crime_score', 0)
+        if message == "Analysis complete":
+            if is_normal and crime_score < 30:
+                st.success(f"✅ Normal behavior detected!")
+            elif not is_normal and crime_score > threshold:
+                st.error(f"⚠️ Suspicious activity detected! Score: {crime_score}%")
+            else:
+                st.success(f"✅ Analysis complete!")
+
+        if email_alerts and metrics and crime_score > threshold:
+            crime_level, _ = get_crime_level(crime_score)
+            crime_type = "SUSPICIOUS"
+            if crime_score > 40:
+                crime_type = "CRIME DETECTED"
+            send_crime_alert(video_filename, metrics, crime_type, crime_level)
+
+
+def display_performance_metrics():
+    perf_metrics = crime_model.get_performance_metrics()
+    training_info = crime_model.get_training_info()
+    training_history = crime_model.get_training_history()
+
+    st.markdown("### 📊 PERFORMANCE")
+
+    if crime_model.trainer.trained:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Accuracy", f"{perf_metrics.get('accuracy', 0):.1f}%")
+        with col2:
+            st.metric("Precision", f"{perf_metrics.get('precision', 0):.1f}%")
+        with col3:
+            st.metric("Recall", f"{perf_metrics.get('recall', 0):.1f}%")
+        with col4:
+            st.metric("F1 Score", f"{perf_metrics.get('f1_score', 0):.1f}%")
+
+        if training_info:
+            st.info(f"""
+            **Model:** {training_info.get('model_architecture', 'ResNet18')}
+            **Best Val Acc:** {training_info.get('best_val_accuracy', 0):.1f}% (Epoch {training_info.get('best_epoch', 0)})
+            **Samples:** Train={training_info.get('train_samples', 0)} | Val={training_info.get('val_samples', 0)}
+            """)
+
+        # Training curve
+        if training_history and training_history.get('train_acc'):
+            fig = go.Figure()
+            epochs = list(range(1, len(training_history['train_acc']) + 1))
+            fig.add_trace(go.Scatter(x=epochs, y=training_history['train_acc'], mode='lines',
+                                     name='Training', line=dict(color='#00fbff')))
+            fig.add_trace(go.Scatter(x=epochs, y=training_history['val_acc'], mode='lines',
+                                     name='Validation', line=dict(color='#ff4757')))
+            fig.update_layout(title="Training Progress", xaxis_title="Epoch", yaxis_title="Accuracy (%)",
+                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white',
+                              height=250)
+            st.plotly_chart(fig, use_container_width=True)
+
+        if 'per_class_accuracy' in perf_metrics:
+            with st.expander("Per-Class Accuracy"):
+                for class_name, acc in sorted(perf_metrics['per_class_accuracy'].items(), key=lambda x: x[1],
+                                              reverse=True)[:10]:
+                    color = "#00ff88" if acc > 70 else "#feca57" if acc > 40 else "#ff4757"
+                    st.markdown(f"`{class_name.upper()}`: **<span style='color:{color}'>{acc:.1f}%</span>**",
+                                unsafe_allow_html=True)
+    else:
+        st.info("🤖 Model not trained. Add videos to 'train' folder.")
+
+
+# -- MAIN APP --
 def main():
-    # Set background
     set_background()
 
-    # Header
     st.markdown("""
-        <div class="main-header">
-            <h1>🚨 AI COMMUNITY SECURITY ANALYTICS</h1>
-            <p style="color: #00fbff; font-size: 1.2em;">Advanced Crime Detection System</p>
-        </div>
+    <div class="main-header">
+        <h1>🚨 AI COMMUNITY SECURITY ANALYTICS</h1>
+        <p style="color: #00fbff;">ResNet18 | Optimized for Speed | Anti-Overfitting</p>
+    </div>
     """, unsafe_allow_html=True)
 
-    # Initialize session state
     if 'analysis_complete' not in st.session_state:
         st.session_state['analysis_complete'] = False
 
-    # Sidebar navigation
     with st.sidebar:
-        st.markdown("""
-            <div style="text-align: center; padding: 15px; background: linear-gradient(45deg, #00fbff20, #00ff8820); 
-                       border-radius: 15px; margin-bottom: 20px; border: 1px solid #00fbff;">
-                <h3 style="color: #00fbff; margin: 0;">CONTROL PANEL</h3>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown("### CONTROL PANEL")
 
-        selected = option_menu(
-            menu_title=None,
-            options=["Live Analysis", "Dataset Browser", "Analytics History", "Settings"],
-            icons=["camera-video-fill", "folder-fill", "graph-up", "gear-fill"],
-            menu_icon="cast",
-            default_index=0,
-            styles={
-                "container": {"background": "rgba(0,0,0,0.8)", "border": "1px solid #00fbff", "border-radius": "10px"},
-                "icon": {"color": "#00fbff", "font-size": "20px"},
-                "nav-link": {"color": "white", "font-size": "16px", "text-align": "left", "margin": "5px"},
-                "nav-link-selected": {"background": "rgba(0,255,255,0.2)", "color": "#00fbff"},
-            }
-        )
+        selected = st.radio("Menu", ["Live Analysis", "Analytics History", "Settings"])
 
         st.markdown("---")
 
-        # System stats
         videos = scanner.get_all_videos(DATASET_PATH)
-        st.markdown("""
-            <div class="info-box">
-                <h4 style="color: #00fbff; margin: 0;">📊 SYSTEM STATS</h4>
-            </div>
-        """, unsafe_allow_html=True)
+        split_stats = scanner.get_split_stats(DATASET_PATH)
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Videos Indexed", len(videos))
+            st.metric("Videos", len(videos))
         with col2:
             st.metric("Analyses", len(analyzer.analysis_history))
 
-        model_status = "✅ Loaded" if crime_model.model_loaded else "⚠️ Limited"
-        st.markdown(f"**Model:** {model_status}")
+        st.markdown("#### Dataset")
+        st.text(f"Train: {split_stats.get('train', 0)}")
+        st.text(f"Test: {split_stats.get('test', 0)}")
+        st.text(f"Valid: {split_stats.get('valid', 0)}")
+
+        st.markdown(f"**Model:** {'✅ Trained' if crime_model.trainer.trained else '⚠️ Not Trained'}")
         st.markdown(f"**Device:** {crime_model.device}")
 
-        # Threshold control
+        display_performance_metrics()
+
         st.markdown("---")
-        st.markdown("### ⚡ Detection Threshold")
-        threshold = st.slider("Sensitivity", 0, 100, 40, key="threshold",
-                              help="Lower = More sensitive, Higher = Less sensitive")
+        threshold = st.slider("Alert Threshold", 0, 100, 45)
+        email_alerts = st.checkbox("Email Alerts", value=True)
 
-        # Analysis options
-        st.markdown("### 🔍 Analysis Options")
-        deep_analysis = st.checkbox("Deep Analysis", value=True, key="deep")
-        motion_detection = st.checkbox("Motion Detection", value=True, key="motion")
-        weapon_detection = st.checkbox("Weapon Detection", value=True, key="weapon")
-        email_alerts = st.checkbox("Email Alerts", value=True, key="email")
-
-    # Main content area
     if selected == "Live Analysis":
         col1, col2 = st.columns([0.4, 0.6])
 
         with col1:
             st.markdown('<div class="css-card">', unsafe_allow_html=True)
-            st.markdown("### 📹 VIDEO SOURCE")
+            st.markdown("### VIDEO SOURCE")
 
-            # Video source selection
-            source_option = st.radio(
-                "Select source:",
-                ["📁 Dataset Browser", "📤 Upload Video"],
-                horizontal=True,
-                key="source"
-            )
-
+            source = st.radio("Source:", ["Dataset", "Upload"], horizontal=True)
             video_path = None
             video_filename = None
 
-            if source_option == "📁 Dataset Browser":
-                videos = scanner.get_all_videos(DATASET_PATH)
-                if videos:
-                    # Create display names
-                    video_options = {}
-                    for v in videos:
-                        try:
-                            folder = os.path.basename(os.path.dirname(v))
-                            name = os.path.basename(v)
-                            display = f"📁 {folder} / {name}"
-                            video_options[display] = v
-                        except:
-                            continue
-
-                    if video_options:
-                        selected_display = st.selectbox(
-                            "Choose video:",
-                            options=list(video_options.keys()),
-                            key="video_select"
-                        )
-                        video_path = video_options[selected_display]
-                        video_filename = os.path.basename(video_path)
-
-                        # Show video info
-                        try:
-                            size = os.path.getsize(video_path) / (1024 * 1024)
-                            st.markdown(f"**Size:** {size:.1f} MB")
-
-                            # Check if video is accessible
-                            is_valid, msg = check_video_file(video_path)
-                            if is_valid:
-                                st.success("✅ Video accessible")
-                            else:
-                                st.warning(f"⚠️ {msg}")
-                        except:
-                            st.warning("⚠️ Could not read video info")
+            if source == "Dataset":
+                all_videos = scanner.get_all_videos(DATASET_PATH)
+                if all_videos:
+                    video_options = {os.path.basename(v): v for v in all_videos}
+                    selected_video = st.selectbox("Choose:", list(video_options.keys()))
+                    video_path = video_options[selected_video]
+                    video_filename = selected_video
                 else:
-                    st.warning("📂 No videos found in dataset")
-                    st.info("Add videos to: " + DATASET_PATH)
+                    st.warning("No videos found")
+            else:
+                uploaded = st.file_uploader("Upload", type=['mp4', 'avi', 'mkv', 'mov'])
+                if uploaded:
+                    tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                    tfile.write(uploaded.read())
+                    video_path = tfile.name
+                    video_filename = uploaded.name
+                    st.success(f"Uploaded: {video_filename}")
 
-            else:  # Upload Video
-                uploaded_file = st.file_uploader(
-                    "Upload video file",
-                    type=['mp4', 'avi', 'mkv', 'mov', 'wmv', 'mpeg'],
-                    key="uploader"
-                )
+            if video_path and st.checkbox("Show Video"):
+                with open(video_path, 'rb') as f:
+                    st.video(f.read())
 
-                if uploaded_file:
-                    # Save temporarily
-                    try:
-                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-                        tfile.write(uploaded_file.read())
-                        video_path = tfile.name
-                        video_filename = uploaded_file.name
-                        st.success(f"✅ Uploaded: {video_filename}")
-                    except Exception as e:
-                        st.error(f"Upload failed: {e}")
+            if video_path and st.button("🔍 ANALYZE", type="primary", use_container_width=True):
+                run_automatic_analysis(video_path, video_filename, email_alerts, threshold)
 
             st.markdown('</div>', unsafe_allow_html=True)
 
-            # Video display section (optional)
-            if video_path and st.checkbox("🎬 Show Video Player", value=False, key="show_video"):
-                st.markdown('<div class="video-container">', unsafe_allow_html=True)
-                try:
-                    # Read video file for display
-                    with open(video_path, 'rb') as f:
-                        video_bytes = f.read()
-                    if video_bytes:
-                        st.video(video_bytes)
-                except Exception as e:
-                    st.warning(f"⚠️ Video preview unavailable: {str(e)[:50]}")
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            # Analyze button
-            if video_path:
-                if st.button("🚨 ANALYZE FOR CRIME", key="analyze", use_container_width=True):
-                    with st.spinner("🔍 Analyzing video for criminal activity..."):
-                        progress_bar = st.progress(0)
-
-                        # Run analysis
-                        metrics, message = analyzer.analyze_video_crime(
-                            video_path, progress_bar
-                        )
-
-                        progress_bar.progress(1.0)
-
-                        # Store in session state
-                        st.session_state['last_analysis'] = {
-                            'metrics': metrics,
-                            'video': video_path,
-                            'filename': video_filename,
-                            'time': datetime.now()
-                        }
-                        st.session_state['analysis_complete'] = True
-
-                        if message != "Analysis complete":
-                            st.warning(message)
-                        else:
-                            st.success("✅ Analysis complete!")
-
-                            # Send automated email alert if enabled and crime detected
-                            if email_alerts and metrics and metrics.get('overall_crime_score', 0) > threshold:
-                                crime_level, _ = get_crime_level(metrics['overall_crime_score'])
-                                crime_type = get_crime_type(metrics)
-
-                                if send_crime_alert(video_filename, metrics, crime_type, crime_level):
-                                    st.info("📧 Automated crime alert email sent!")
-
         with col2:
             if st.session_state.get('analysis_complete', False) and 'last_analysis' in st.session_state:
-                analysis = st.session_state['last_analysis']
-                metrics = analysis['metrics']
+                metrics = st.session_state['last_analysis']['metrics']
 
                 if metrics:
-                    overall_score = metrics.get('overall_crime_score', 0)
-                    robbery_score = metrics.get('robbery_score', 0)
-                    assault_score = metrics.get('assault_score', 0)
-                    theft_score = metrics.get('theft_score', 0)
+                    score = metrics.get('overall_crime_score', 0)
+                    crime_level, color = get_crime_level(score)
 
-                    # Crime level
-                    crime_level, crime_color = get_crime_level(overall_score)
-                    crime_type = get_crime_type(metrics)
-
-                    # Alert display
-                    if overall_score > threshold:
-                        if overall_score > 70:
-                            alert_class = "alert-critical"
-                            alert_text = f"🚨 {crime_type} DETECTED! Score: {overall_score:.1f}%"
-                        elif overall_score > 40:
-                            alert_class = "alert-warning"
-                            alert_text = f"⚠️ {crime_type} ACTIVITY! Score: {overall_score:.1f}%"
+                    if score > threshold:
+                        alert_class = "alert-critical" if score > 70 else "alert-warning"
+                        st.markdown(f'<div class="{alert_class}">🚨 ALERT! Score: {score:.1f}%</div>',
+                                    unsafe_allow_html=True)
                     else:
-                        alert_class = "alert-secure"
-                        alert_text = f"✅ NO CRIME DETECTED - Score: {overall_score:.1f}%"
+                        st.markdown(f'<div class="alert-secure">✅ SAFE - Score: {score:.1f}%</div>',
+                                    unsafe_allow_html=True)
 
-                    st.markdown(f'<div class="{alert_class}">{alert_text}</div>',
-                                unsafe_allow_html=True)
-
-                    # File info
                     st.markdown(f"""
-                        <div class="info-box">
-                            <b>File:</b> {analysis.get('filename', 'Unknown')}<br>
-                            <b>Duration:</b> {metrics.get('duration', 0)}s<br>
-                            <b>Frames:</b> {metrics.get('frames_analyzed', 0)}/{metrics.get('total_frames', 0)}
-                        </div>
+                    <div class="info-box">
+                        <b>File:</b> {st.session_state['last_analysis']['filename']}<br>
+                        <b>Duration:</b> {metrics.get('duration', 0)}s<br>
+                        <b>Frames:</b> {metrics.get('frames_analyzed', 0)}<br>
+                        <b>Events:</b> {metrics.get('crime_events', 0)}<br>
+                        <b>Model:</b> {metrics.get('model_architecture', 'ResNet18')}
+                    </div>
                     """, unsafe_allow_html=True)
 
-                    # Metrics display
+                    # Crime metrics
                     col_a, col_b, col_c = st.columns(3)
                     with col_a:
-                        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                        st.metric("Robbery Risk", f"{metrics.get('robbery_score', 0)}%")
-                        st.markdown('</div>', unsafe_allow_html=True)
-
+                        st.metric("Robbery", f"{metrics.get('robbery_score', 0)}%")
                     with col_b:
-                        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                        st.metric("Assault Risk", f"{metrics.get('assault_score', 0)}%")
-                        st.markdown('</div>', unsafe_allow_html=True)
-
+                        st.metric("Assault", f"{metrics.get('assault_score', 0)}%")
                     with col_c:
-                        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                        st.metric("Theft Risk", f"{metrics.get('theft_score', 0)}%")
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        st.metric("Theft", f"{metrics.get('theft_score', 0)}%")
 
-                    # Detailed metrics
-                    st.markdown('<div class="css-card">', unsafe_allow_html=True)
-                    st.markdown("### 📊 DETAILED ANALYSIS")
+                    # Display detailed events - FIXED: check if crime_events_list exists
+                    if metrics.get('crime_events', 0) > 0:
+                        with st.expander(f"📋 {metrics['crime_events']} Events Detected", expanded=True):
+                            # Get the events list from session state
+                            if 'last_analysis' in st.session_state and 'crime_events_list' in \
+                                    st.session_state['last_analysis']['metrics']:
+                                events_list = st.session_state['last_analysis']['metrics']['crime_events_list']
+                            else:
+                                # Try to get from analyzer history
+                                events_list = []
+                                if len(analyzer.analysis_history) > 0:
+                                    events_list = analyzer.analysis_history[-1].get('crime_events', [])
 
-                    # Create tabs
-                    tab1, tab2, tab3 = st.tabs(["📈 Crime Metrics", "📊 Crime Profile", "⏱️ Timeline"])
+                            if events_list and len(events_list) > 0:
+                                for idx, event in enumerate(events_list[:20]):  # Show up to 20 events
+                                    event_time = event.get('time', 0)
+                                    event_type = event.get('type', 'UNKNOWN')
+                                    event_score = event.get('score', 0)
+                                    event_conf = event.get('confidence', 0)
 
-                    with tab1:
-                        # Radar chart for crime types
-                        categories = ['Robbery', 'Theft', 'Assault', 'Fighting', 'Weapons', 'Suspicious']
-                        values = [
-                            metrics.get('robbery_score', 0),
-                            metrics.get('theft_score', 0),
-                            metrics.get('assault_score', 0),
-                            metrics.get('fighting_score', 0),
-                            metrics.get('weapon_detection', 0),
-                            metrics.get('suspicious_activity', 0)
-                        ]
+                                    # Color code based on score
+                                    if event_score > 70:
+                                        event_color = "🔴"
+                                    elif event_score > 40:
+                                        event_color = "🟠"
+                                    else:
+                                        event_color = "🟡"
 
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatterpolar(
-                            r=values,
-                            theta=categories,
-                            fill='toself',
-                            name='Crime Profile',
-                            line_color='#ff4757',
-                            fillcolor='rgba(255, 71, 87, 0.3)'
-                        ))
-
-                        fig.update_layout(
-                            polar=dict(
-                                radialaxis=dict(
-                                    visible=True,
-                                    range=[0, 100],
-                                    color='white'
-                                ),
-                                bgcolor='rgba(0,0,0,0)'
-                            ),
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            font_color='white',
-                            showlegend=False,
-                            height=400
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    with tab2:
-                        # Bar chart comparison
-                        fig = go.Figure()
-
-                        crime_bars = {
-                            'Robbery': metrics.get('robbery_score', 0),
-                            'Assault': metrics.get('assault_score', 0),
-                            'Theft': metrics.get('theft_score', 0),
-                            'Weapons': metrics.get('weapon_detection', 0)
-                        }
-
-                        colors = ['#ff4757', '#ff6b6b', '#feca57', '#00fbff']
-
-                        fig.add_trace(go.Bar(
-                            x=list(crime_bars.keys()),
-                            y=list(crime_bars.values()),
-                            marker_color=colors,
-                            text=[f"{v:.1f}%" for v in crime_bars.values()],
-                            textposition='auto',
-                            textfont=dict(color='white')
-                        ))
-
-                        fig.update_layout(
-                            title="Crime Type Comparison",
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            font_color='white',
-                            yaxis_range=[0, 100],
-                            showlegend=False,
-                            height=400
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    with tab3:
-                        st.markdown("#### Crime Events Timeline")
-                        if metrics.get('crime_events', 0) > 0:
-                            crime_count = metrics['crime_events']
-                            robbery_events = metrics.get('robbery_events', 0)
-                            assault_events = metrics.get('assault_events', 0)
-                            theft_events = metrics.get('theft_events', 0)
-
-                            st.warning(f"⚠️ {crime_count} crime events detected")
-                            st.markdown(f"**Robbery Events:** {robbery_events}")
-                            st.markdown(f"**Assault Events:** {assault_events}")
-                            st.markdown(f"**Theft Events:** {theft_events}")
-
-                            # Create event timeline
-                            events = analyzer.analysis_history[-1].get('crime_events', [])
-                            if events:
-                                event_df = pd.DataFrame(events)
-                                st.dataframe(event_df, use_container_width=True)
-                        else:
-                            st.success("✅ No crime events detected")
-
-                    st.markdown('</div>', unsafe_allow_html=True)
-
-                    # Manual email button (keep for manual sending)
-                    if email_alerts and overall_score > threshold:
-                        if st.button("📧 Send Crime Alert Email (Manual)", key="send_email"):
-                            if send_crime_alert(analysis.get('filename', 'Unknown'), metrics, crime_type, crime_level):
-                                st.success("📧 Crime alert email sent successfully!")
+                                    st.markdown(f"""
+                                    <div style="background: rgba(255, 71, 87, 0.1); padding: 8px; margin: 5px 0; border-radius: 5px; border-left: 3px solid {'#ff4757' if event_score > 70 else '#feca57' if event_score > 40 else '#00ff88'};">
+                                        <b>⏱️ {event_time}s</b> - {event_color} <b>{event_type}</b><br>
+                                        <span style="font-size: 12px;">Score: {event_score}% | Confidence: {event_conf}%</span>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                            else:
+                                st.info("No detailed event data available")
+                    else:
+                        st.success("✅ No suspicious events detected")
             else:
-                # Placeholder when no analysis
-                st.markdown("""
-                    <div class="css-card" style="display: flex; flex-direction: column; 
-                                align-items: center; justify-content: center; min-height: 400px;">
-                        <h2 style="color: #00fbff; text-align: center;">🔍 SELECT A VIDEO</h2>
-                        <p style="color: white; text-align: center;">Choose a video from the left panel to begin crime analysis</p>
-                    </div>
-                """, unsafe_allow_html=True)
-
-    elif selected == "Dataset Browser":
-        st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### 📁 DATASET BROWSER")
-
-        # Get folder statistics
-        folder_stats = scanner.get_folder_stats(DATASET_PATH)
-
-        if folder_stats:
-            # Display folders as cards
-            cols = st.columns(3)
-            for idx, (folder, stats) in enumerate(folder_stats.items()):
-                with cols[idx % 3]:
-                    st.markdown(f"""
-                        <div style="background: rgba(0,255,255,0.1); padding: 15px; 
-                             border-radius: 10px; margin: 10px 0; border-left: 4px solid #00fbff;">
-                            <h4 style="color: #00fbff;">📁 {folder.upper()}</h4>
-                            <p style="color: white;">Videos: {stats['count']}</p>
-                        </div>
-                    """, unsafe_allow_html=True)
-        else:
-            st.info("No folders found in dataset")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # List all videos
-        st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### 🎥 ALL VIDEOS")
-
-        videos = scanner.get_all_videos(DATASET_PATH)
-        if videos:
-            video_data = []
-            for video in videos[:50]:  # Limit to 50 for performance
-                try:
-                    folder = os.path.basename(os.path.dirname(video))
-                    size = os.path.getsize(video) / (1024 * 1024)
-                    modified = datetime.fromtimestamp(os.path.getmtime(video))
-
-                    video_data.append({
-                        'Folder': folder,
-                        'Video': os.path.basename(video),
-                        'Size (MB)': f"{size:.1f}",
-                        'Modified': modified.strftime('%Y-%m-%d %H:%M')
-                    })
-                except:
-                    continue
-
-            if video_data:
-                df = pd.DataFrame(video_data)
-                st.dataframe(df, use_container_width=True)
-                st.caption(f"Showing {len(video_data)} of {len(videos)} videos")
-            else:
-                st.warning("Could not read video information")
-        else:
-            st.warning("No videos found in dataset")
-
-        st.markdown('</div>', unsafe_allow_html=True)
+                st.info("Select a video and click ANALYZE")
 
     elif selected == "Analytics History":
         st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### 📊 ANALYSIS HISTORY")
+        st.markdown("### HISTORY")
 
         if analyzer.analysis_history:
-            # Create history dataframe
-            history_data = []
-            for entry in list(analyzer.analysis_history)[-20:]:  # Last 20 entries
-                history_data.append({
+            history = []
+            # FIXED: Convert deque to list for slicing
+            history_list = list(analyzer.analysis_history)
+            for entry in history_list[-20:]:  # Get last 20 entries safely
+                history.append({
                     'Time': entry['timestamp'].strftime('%H:%M:%S'),
-                    'Video': entry['video'][:20] + '...' if len(entry['video']) > 20 else entry['video'],
-                    'Crime Score': f"{entry['metrics']['overall_crime_score']}%",
-                    'Robbery': f"{entry['metrics']['robbery_score']}%",
-                    'Assault': f"{entry['metrics']['assault_score']}%",
-                    'Theft': f"{entry['metrics']['theft_score']}%",
+                    'Video': entry['video'][:30],
+                    'Score': f"{entry['metrics']['overall_crime_score']}%",
                     'Events': entry['metrics']['crime_events']
                 })
+            st.dataframe(pd.DataFrame(history), use_container_width=True)
 
-            df = pd.DataFrame(history_data)
-            st.dataframe(df, use_container_width=True)
-
-            # Historical trend graph
-            if len(analyzer.analysis_history) > 1:
+            if len(history_list) > 1:
                 fig = go.Figure()
-
-                scores = [e['metrics']['overall_crime_score'] for e in analyzer.analysis_history]
-                robbery_scores = [e['metrics']['robbery_score'] for e in analyzer.analysis_history]
-                assault_scores = [e['metrics']['assault_score'] for e in analyzer.analysis_history]
-                theft_scores = [e['metrics']['theft_score'] for e in analyzer.analysis_history]
-                times = list(range(len(scores)))
-
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=scores,
-                    mode='lines+markers',
-                    name='Overall Crime',
-                    line=dict(color='#ff4757', width=3),
-                    marker=dict(size=8)
-                ))
-
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=robbery_scores,
-                    mode='lines',
-                    name='Robbery',
-                    line=dict(color='#feca57', width=2, dash='dash')
-                ))
-
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=assault_scores,
-                    mode='lines',
-                    name='Assault',
-                    line=dict(color='#00fbff', width=2, dash='dash')
-                ))
-
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=theft_scores,
-                    mode='lines',
-                    name='Theft',
-                    line=dict(color='#ff6b6b', width=2, dash='dash')
-                ))
-
-                fig.add_hline(y=threshold, line_dash="dash", line_color="red",
-                              annotation_text=f"Threshold: {threshold}%")
-
-                fig.update_layout(
-                    title="Historical Crime Scores",
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    font_color='white',
-                    xaxis_title="Analysis #",
-                    yaxis_title="Crime Score (%)",
-                    height=400
-                )
-
+                scores = [e['metrics']['overall_crime_score'] for e in history_list[-50:]]  # Last 50 entries
+                fig.add_trace(go.Scatter(y=scores, mode='lines+markers', line=dict(color='#ff4757')))
+                fig.add_hline(y=threshold, line_dash="dash", line_color="yellow")
+                fig.update_layout(title="Crime Score Trend", xaxis_title="Analysis", yaxis_title="Score (%)",
+                                  paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white',
+                                  height=300)
                 st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("📊 No analysis history yet. Run some crime analyses first!")
+            st.info("No history yet")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
     elif selected == "Settings":
         st.markdown('<div class="css-card">', unsafe_allow_html=True)
-        st.markdown("### ⚙️ SYSTEM SETTINGS")
+        st.markdown("### SETTINGS")
 
-        col1, col2 = st.columns(2)
+        st.markdown(f"**Dataset Path:** `{DATASET_PATH}`")
 
-        with col1:
-            st.markdown("#### 📧 Email Configuration")
-            email = st.text_input("Alert Email", value=ALERT_EMAIL, key="email_input")
-            password = st.text_input("App Password", value=GMAIL_APP_PASSWORD, type="password", key="pwd_input")
+        st.markdown("#### Retraining")
+        if st.button("🔄 Retrain Model", type="primary"):
+            with st.spinner("Retraining..."):
+                def prog(p, msg):
+                    st.caption(msg)
 
-            if st.button("Test Email Connection", key="test_email"):
-                try:
-                    yag = yagmail.SMTP(email, password)
-                    yag.send(to=email, subject="Test Alert",
-                             contents="AI Security System - Test successful!")
-                    st.success("✅ Email configured successfully!")
-                except Exception as e:
-                    st.error(f"❌ Email configuration failed: {e}")
+                success = crime_model.trainer.train_fast_model(DATASET_PATH, prog)
+                if success:
+                    crime_model.model_loaded = True
+                    st.success("Model retrained successfully!")
+                    st.rerun()
+                else:
+                    st.error("Training failed")
 
-        with col2:
-            st.markdown("#### 🗂️ Dataset Path")
-            new_path = st.text_input("Dataset Location", value=DATASET_PATH, key="path_input")
+        st.markdown("#### Clear Data")
+        if st.button("🗑️ Clear History"):
+            analyzer.analysis_history.clear()
+            analyzer.detection_stats = {'true_positives': 0, 'false_positives': 0, 'true_negatives': 0,
+                                        'false_negatives': 0}
+            st.success("History cleared!")
 
-            if st.button("Refresh Scanner", key="refresh"):
-                with st.spinner("Scanning..."):
-                    videos = scanner.get_all_videos(new_path, force_refresh=True)
-                    st.success(f"✅ Scanner refreshed! Found {len(videos)} videos")
-
-            st.markdown("#### 🤖 Model Settings")
-            st.info(f"Model Status: {'✅ Loaded' if crime_model.model_loaded else '⚠️ Limited'}")
-            st.info(f"Device: {crime_model.device}")
-
-            if st.button("Clear Analysis History", key="clear"):
-                analyzer.analysis_history.clear()
-                st.session_state['analysis_complete'] = False
-                st.success("✅ History cleared!")
+        st.markdown("#### Model Info")
+        st.info("""
+        **Optimized Model Features:**
+        - ResNet18 backbone (fast inference)
+        - Frozen early layers (prevents overfitting)
+        - Dropout layers (0.4, 0.3, 0.2) for regularization
+        - Label smoothing (0.1)
+        - Weight decay (0.01)
+        - Early stopping
+        - Single frame extraction (fast)
+        - Majority voting on 5 frames
+        """)
 
         st.markdown('</div>', unsafe_allow_html=True)
 

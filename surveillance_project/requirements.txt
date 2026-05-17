@@ -1,0 +1,11 @@
+streamlit
+torch
+torchvision
+opencv-python-headless
+numpy
+pandas
+plotly
+scikit-learn
+pillow
+yagmail
+streamlit-option-menu
