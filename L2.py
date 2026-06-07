@@ -349,9 +349,9 @@ if 'email_config' not in st.session_state:
     st.session_state.email_config = {
         'smtp_server': 'smtp.gmail.com',
         'smtp_port': 587,
-        'sender': 'emmanuelchiutsi001@gmail.com',
-        'recipient': 'emmanuelchiutsi001@gmail.com',
-        'password': 'twml rauq erkv xark'
+        'sender': '',
+        'recipient': '',
+        'password': ''
     }
 if 'machine_stopped' not in st.session_state:
     st.session_state.machine_stopped = False
@@ -513,7 +513,7 @@ def generate_sample_dataset():
     df['health_score'] = df['health_score'].clip(0, 100)
 
     # Save to file
-    file_path = r"C:\Users\emmanuel chiutsi\Documents\Industrial_fault_detection.csv"
+    file_path = "..."
     df.to_csv(file_path, index=False)
 
     return df, file_path
