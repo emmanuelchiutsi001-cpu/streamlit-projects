@@ -38,9 +38,9 @@ warnings.filterwarnings('ignore')
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 # -- 2. CONFIGURATION --
-GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
-ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
-DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\security dataset"
+GMAIL_APP_PASSWORD = "..."
+ALERT_EMAIL = "...."
+DATASET_PATH = "..."
 
 # Define all crime categories
 CRIME_CATEGORIES = [
