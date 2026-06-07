@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Configuration
-DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\dataset-video-split"  # CHANGE THIS TO YOUR PATH
+DATASET_PATH = "...."  # CHANGE THIS TO YOUR PATH
 CRIME_CATEGORIES = [
     'abuse', 'arrest', 'arson', 'assault', 'bulglary', 'clapping',
     'explosion', 'fighting', 'meet_and_split', 'normal_videos',
@@ -359,7 +359,7 @@ def train_and_save_model(dataset_path, model_save_path="saved_model.pkl"):
 
 if __name__ == "__main__":
     # IMPORTANT: Change this to your actual dataset path
-    DATASET_PATH = r"C:\Users\emmanuel chiutsi\Documents\dataset-video-split"
+    DATASET_PATH = "...."
 
     print("=" * 60)
     print("CRIME DETECTION MODEL TRAINER")
