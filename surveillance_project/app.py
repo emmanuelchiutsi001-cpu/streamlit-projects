@@ -46,23 +46,23 @@ try:
         GMAIL_APP_PASSWORD = st.secrets["GMAIL_PASSWORD"]
     else:
         # Fallback for local testing without secrets
-        GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
+        GMAIL_APP_PASSWORD = ""
         if os.path.exists(".streamlit/secrets.toml"):
             st.info("📧 Email alerts configured in secrets.toml")
         else:
             st.warning("⚠️ Using default email configuration. Email alerts may not work.")
 except Exception:
     # Ultimate fallback
-    GMAIL_APP_PASSWORD = "twmlrauqerkvxark"
+    GMAIL_APP_PASSWORD = ""
 
 # Get alert email from secrets or use default
 try:
     if 'ALERT_EMAIL' in st.secrets:
         ALERT_EMAIL = st.secrets["ALERT_EMAIL"]
     else:
-        ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
+        ALERT_EMAIL = ""
 except Exception:
-    ALERT_EMAIL = "emmanuelchiutsi001@gmail.com"
+    ALERT_EMAIL = ""
 
 DATASET_PATH = "./dataset"  # Changed for deployment - create this folder or use temp
 
